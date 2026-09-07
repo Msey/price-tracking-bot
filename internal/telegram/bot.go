@@ -14,6 +14,7 @@ import (
 	telebot "gopkg.in/telebot.v3"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
+	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
@@ -33,7 +34,9 @@ const helpText = `Я слежу за ценами и пишу, когда они
 /help — эта справка
 
 <b>Магазины</b>
-Сейчас работает DNS. Wildberries, Ozon и Яндекс.Маркет на очереди.`
+Сейчас работает DNS. Проверяю не чаще чем раз в указанный интервал, между карточками пауза — иначе магазин банит.
+
+Wildberries, Ozon и Яндекс.Маркет на очереди.`
 
 type Bot struct {
 	bot   *telebot.Bot
@@ -91,6 +94,12 @@ func (b *Bot) Start(ctx context.Context) {
 		b.bot.Stop()
 	}()
 	b.bot.Start()
+}
+
+// Notify отправляет HTML-сообщение в личку. Нужен трекеру цен.
+func (b *Bot) Notify(_ context.Context, chatID int64, message string) error {
+	_, err := b.bot.Send(telebot.ChatID(chatID), message, telebot.NoPreview)
+	return err
 }
 
 func (b *Bot) accessMiddleware(next telebot.HandlerFunc) telebot.HandlerFunc {
@@ -303,33 +312,11 @@ func describePrice(t storage.Tracked) string {
 	if !t.LastPriceKopecks.Valid {
 		return "цена ещё не проверялась"
 	}
-	price := formatKopecks(t.LastPriceKopecks.Int64)
+	price := money.FormatKopecks(t.LastPriceKopecks.Int64)
 	if !t.LastCheckedAt.Valid {
 		return price
 	}
 	return price + " (проверено " + t.LastCheckedAt.String + ")"
-}
-
-// formatKopecks печатает цену с разделением разрядов: 15999900 -> "159 999 ₽".
-func formatKopecks(kopecks int64) string {
-	if kopecks < 0 {
-		return "0\u00a0₽"
-	}
-	whole := kopecks / 100
-	digits := strconv.FormatInt(whole, 10)
-
-	var sb strings.Builder
-	for i, d := range digits {
-		if i > 0 && (len(digits)-i)%3 == 0 {
-			sb.WriteString("\u00a0")
-		}
-		sb.WriteRune(d)
-	}
-	if rem := kopecks % 100; rem != 0 {
-		fmt.Fprintf(&sb, ",%02d", rem)
-	}
-	sb.WriteString("\u00a0₽")
-	return sb.String()
 }
 
 func humanDuration(d time.Duration) string {

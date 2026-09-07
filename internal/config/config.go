@@ -23,10 +23,17 @@ var (
 )
 
 type Config struct {
-	BotToken      string
-	DatabasePath  string
-	CheckInterval time.Duration
-	DefaultCity   string
+	BotToken        string
+	DatabasePath    string
+	CheckInterval   time.Duration
+	FetchGap        time.Duration
+	FetchPerCycle   int
+	StartupDelay    time.Duration
+	CircuitCooldown time.Duration
+	ChromeProfile   string
+	ChromePath      string
+	ChromeHeadless  bool
+	DefaultCity     string
 	// AllowedUsers пуст, если доступ открыт всем.
 	AllowedUsers map[int64]bool
 }
@@ -53,10 +60,47 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("config: CHECK_INTERVAL: %w", err)
 	}
-	if interval < time.Minute {
-		return Config{}, fmt.Errorf("config: CHECK_INTERVAL меньше минуты (%s), это гарантированный бан", interval)
+	if interval < 10*time.Minute {
+		return Config{}, fmt.Errorf("config: CHECK_INTERVAL меньше 10 минут (%s): DNS банит за частые запросы", interval)
 	}
 	cfg.CheckInterval = interval
+
+	gap, err := time.ParseDuration(envOr("FETCH_GAP", "45s"))
+	if err != nil {
+		return Config{}, fmt.Errorf("config: FETCH_GAP: %w", err)
+	}
+	if gap < 30*time.Second {
+		return Config{}, fmt.Errorf("config: FETCH_GAP меньше 30 секунд (%s)", gap)
+	}
+	cfg.FetchGap = gap
+
+	perCycle, err := strconv.Atoi(envOr("FETCH_PER_CYCLE", "8"))
+	if err != nil || perCycle < 1 || perCycle > 20 {
+		return Config{}, fmt.Errorf("config: FETCH_PER_CYCLE должен быть от 1 до 20")
+	}
+	cfg.FetchPerCycle = perCycle
+
+	startup, err := time.ParseDuration(envOr("STARTUP_DELAY", "1m"))
+	if err != nil {
+		return Config{}, fmt.Errorf("config: STARTUP_DELAY: %w", err)
+	}
+	if startup < 30*time.Second {
+		startup = 30 * time.Second
+	}
+	cfg.StartupDelay = startup
+
+	cooldown, err := time.ParseDuration(envOr("CIRCUIT_COOLDOWN", "45m"))
+	if err != nil {
+		return Config{}, fmt.Errorf("config: CIRCUIT_COOLDOWN: %w", err)
+	}
+	if cooldown < 15*time.Minute {
+		return Config{}, fmt.Errorf("config: CIRCUIT_COOLDOWN меньше 15 минут (%s)", cooldown)
+	}
+	cfg.CircuitCooldown = cooldown
+
+	cfg.ChromeProfile = envOr("CHROME_PROFILE", "data/chrome-profile")
+	cfg.ChromePath = os.Getenv("CHROME_PATH")
+	cfg.ChromeHeadless = envOr("CHROME_HEADLESS", "0") == "1"
 
 	if !cityShape.MatchString(cfg.DefaultCity) {
 		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)

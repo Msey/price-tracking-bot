@@ -10,8 +10,10 @@ import (
 	"syscall"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
+	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/telegram"
+	"github.com/Msey/price-tracking-bot/internal/tracker"
 )
 
 func main() {
@@ -43,13 +45,33 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	dns := fetch.NewDNS(fetch.DNSOptions{
+		ProfileDir:      cfg.ChromeProfile,
+		ChromePath:      cfg.ChromePath,
+		Headless:        cfg.ChromeHeadless,
+		CircuitCooldown: cfg.CircuitCooldown,
+		Log:             log,
+	})
+	defer dns.Close()
+
+	tr := tracker.New(store, dns, bot, tracker.Config{
+		Interval:     cfg.CheckInterval,
+		FetchGap:     cfg.FetchGap,
+		PerCycle:     cfg.FetchPerCycle,
+		StartupDelay: cfg.StartupDelay,
+	}, log)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go tr.Run(ctx)
 
 	log.Info("бот запущен",
 		"username", bot.Username(),
 		"database", cfg.DatabasePath,
 		"interval", cfg.CheckInterval,
+		"fetch_gap", cfg.FetchGap,
+		"per_cycle", cfg.FetchPerCycle,
 		"city", cfg.DefaultCity)
 
 	bot.Start(ctx)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const (
@@ -265,5 +266,62 @@ func TestListSubscriptionsShowsLatestPrice(t *testing.T) {
 	}
 	if got := items[0].LastPriceKopecks; !got.Valid || got.Int64 != 15999900 {
 		t.Errorf("LastPriceKopecks = %v, ожидалось 15999900", got)
+	}
+}
+
+func TestProductsDueSkipsFreshSnapshots(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	fresh, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, _, err := s.AddSubscription(ctx, chatAlice, "dns", "aaaaaaaaaaaaaaaa", "https://www.dns-shop.ru/product/aaaaaaaaaaaaaaaa/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecordSnapshot(ctx, fresh.ID, "новый", 15999900, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO price_history (product_id, price_kopecks, checked_at) VALUES (?, ?, ?)`,
+		stale.ID, 10000, "2020-01-01 00:00:00"); err != nil {
+		t.Fatal(err)
+	}
+
+	due, err := s.ProductsDue(ctx, "dns", time.Now().Add(-20*time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 || due[0].ID != stale.ID {
+		t.Fatalf("due = %+v, ожидался только старый товар", due)
+	}
+}
+
+func TestRecordSnapshotUpdatesName(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordSnapshot(ctx, p.ID, "Honor MagicBook", 15999900, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ProductByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Honor MagicBook" {
+		t.Errorf("name = %q", got.Name)
+	}
+	chats, err := s.SubscriberChats(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0] != chatAlice {
+		t.Errorf("chats = %v", chats)
 	}
 }

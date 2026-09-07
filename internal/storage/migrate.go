@@ -63,6 +63,10 @@ var migrations = []string{
 
 	CREATE INDEX idx_fetch_errors_site ON fetch_errors (site, occurred_at DESC);
 	`,
+
+	// 2–3. Базовая цена, с которой сравниваем следующие подтверждённые чтения.
+	`ALTER TABLE products ADD COLUMN last_notified_kopecks INTEGER;`,
+	`ALTER TABLE products ADD COLUMN last_notified_available INTEGER;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
