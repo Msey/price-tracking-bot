@@ -325,3 +325,51 @@ func TestRecordSnapshotUpdatesName(t *testing.T) {
 		t.Errorf("chats = %v", chats)
 	}
 }
+
+func TestListAllRequests(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	alice, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordSnapshot(ctx, alice.ID, "Honor", 15999900, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListAllRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("заявок %d, ожидалось 2", len(got))
+	}
+	// Сначала более новая (Боб). Цена общая: оба подписаны на один товар.
+	if got[0].ChatID != chatBob || got[1].ChatID != chatAlice {
+		t.Errorf("порядок чатов: %d, %d", got[0].ChatID, got[1].ChatID)
+	}
+	if !got[0].LastPriceKopecks.Valid || got[0].LastPriceKopecks.Int64 != 15999900 {
+		t.Errorf("цена = %v", got[0].LastPriceKopecks)
+	}
+	if got[1].LastPriceKopecks.Int64 != 15999900 {
+		t.Errorf("цена Алисы = %v", got[1].LastPriceKopecks)
+	}
+	if got[0].Product.Name != "Honor" {
+		t.Errorf("имя = %q", got[0].Product.Name)
+	}
+
+	if _, err := s.DeleteSubscription(ctx, chatBob, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ListAllRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ChatID != chatAlice {
+		t.Fatalf("после удаления: %+v", got)
+	}
+}

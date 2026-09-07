@@ -14,6 +14,7 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/telegram"
 	"github.com/Msey/price-tracking-bot/internal/tracker"
+	"github.com/Msey/price-tracking-bot/internal/web"
 )
 
 func main() {
@@ -65,6 +66,9 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	go tr.Run(ctx)
+	if cfg.UIAddr != "" {
+		web.New(store, cfg.UIAddr, log).Start(ctx)
+	}
 
 	log.Info("бот запущен",
 		"username", bot.Username(),
@@ -72,7 +76,8 @@ func run(log *slog.Logger) error {
 		"interval", cfg.CheckInterval,
 		"fetch_gap", cfg.FetchGap,
 		"per_cycle", cfg.FetchPerCycle,
-		"city", cfg.DefaultCity)
+		"city", cfg.DefaultCity,
+		"ui", cfg.UIAddr)
 
 	bot.Start(ctx)
 	log.Info("бот остановлен")

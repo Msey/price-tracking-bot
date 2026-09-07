@@ -36,6 +36,9 @@ type Config struct {
 	DefaultCity     string
 	// AllowedUsers пуст, если доступ открыт всем.
 	AllowedUsers map[int64]bool
+	// UIAddr — адрес локальной страницы со всеми заявками.
+	// Пусто или "off" — не поднимать HTTP.
+	UIAddr string
 }
 
 // Load читает .env, если он есть, и собирает конфигурацию.
@@ -101,6 +104,10 @@ func Load() (Config, error) {
 	cfg.ChromeProfile = envOr("CHROME_PROFILE", "data/chrome-profile")
 	cfg.ChromePath = os.Getenv("CHROME_PATH")
 	cfg.ChromeHeadless = envOr("CHROME_HEADLESS", "0") == "1"
+	cfg.UIAddr = strings.TrimSpace(envOr("UI_ADDR", "127.0.0.1:8080"))
+	if strings.EqualFold(cfg.UIAddr, "off") || cfg.UIAddr == "-" {
+		cfg.UIAddr = ""
+	}
 
 	if !cityShape.MatchString(cfg.DefaultCity) {
 		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)

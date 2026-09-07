@@ -213,6 +213,66 @@ func (s *Store) ListSubscriptions(ctx context.Context, chatID int64) ([]Tracked,
 	return out, nil
 }
 
+// Request — заявка на трекинг: подписка пользователя на товар.
+type Request struct {
+	SubscriptionID   int64
+	CreatedAt        string
+	ChatID           int64
+	Product          Product
+	LastPriceKopecks sql.NullInt64
+	LastAvailable    sql.NullInt64
+	LastCheckedAt    sql.NullString
+	LastErrorKind    sql.NullString
+	LastErrorAt      sql.NullString
+}
+
+// ListAllRequests возвращает все активные заявки, сначала новые.
+func (s *Store) ListAllRequests(ctx context.Context) ([]Request, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.created_at, u.tg_chat_id,
+		       p.id, p.site, p.external_key, p.url, p.name, p.city,
+		       last.price_kopecks, last.available, last.checked_at,
+		       err.kind, err.occurred_at
+		FROM subscriptions s
+		JOIN users u ON u.id = s.user_id
+		JOIN products p ON p.id = s.product_id
+		LEFT JOIN (
+		    SELECT product_id, price_kopecks, available, checked_at,
+		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
+		    FROM price_history
+		) last ON last.product_id = p.id AND last.rn = 1
+		LEFT JOIN (
+		    SELECT product_id, kind, occurred_at,
+		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY occurred_at DESC, id DESC) AS rn
+		    FROM fetch_errors
+		) err ON err.product_id = p.id AND err.rn = 1
+		WHERE s.active = 1
+		ORDER BY s.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("storage: список заявок: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Request
+	for rows.Next() {
+		var r Request
+		if err := rows.Scan(
+			&r.SubscriptionID, &r.CreatedAt, &r.ChatID,
+			&r.Product.ID, &r.Product.Site, &r.Product.ExternalKey,
+			&r.Product.URL, &r.Product.Name, &r.Product.City,
+			&r.LastPriceKopecks, &r.LastAvailable, &r.LastCheckedAt,
+			&r.LastErrorKind, &r.LastErrorAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: чтение заявки: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: обход заявок: %w", err)
+	}
+	return out, nil
+}
+
 // DeleteSubscription убирает подписку. Возвращает false, если её не было.
 func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `

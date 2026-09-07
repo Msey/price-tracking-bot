@@ -23,6 +23,9 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	if cfg.CheckInterval != 20*time.Minute {
 		t.Errorf("interval = %s", cfg.CheckInterval)
 	}
+	if cfg.UIAddr != "127.0.0.1:8080" {
+		t.Errorf("UIAddr = %q", cfg.UIAddr)
+	}
 }
 
 func TestLoadRejectsHTMLCity(t *testing.T) {
@@ -74,5 +77,20 @@ func TestAllowed(t *testing.T) {
 	}
 	if closed.Allowed(1) {
 		t.Error("чужой id не должен проходить")
+	}
+}
+
+func TestLoadDisablesUI(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
+	t.Setenv("DEFAULT_CITY", "moscow")
+	t.Setenv("CHECK_INTERVAL", "20m")
+	t.Setenv("UI_ADDR", "off")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UIAddr != "" {
+		t.Errorf("UIAddr = %q, ожидалась пустая строка", cfg.UIAddr)
 	}
 }

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="20">
+<title>Заявки на трекинг цен</title>
+<style>
+  :root {
+    --bg: #161410;
+    --panel: #211c16;
+    --line: #3a3228;
+    --text: #f3eadc;
+    --muted: #9a8d7a;
+    --gold: #e2b657;
+    --ok: #7dba6f;
+    --wait: #c4a35a;
+    --bad: #d36b5e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #3a2a12 0%, transparent 55%),
+      var(--bg);
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+  h1 { font-size: 28px; font-weight: 650; letter-spacing: -0.03em; margin: 0 0 6px; }
+  .sub { color: var(--muted); margin: 0; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 14px;
+    min-width: 110px;
+  }
+  .stat b { display: block; font-size: 22px; color: var(--gold); }
+  .stat span { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: #2a231c; }
+  a { color: var(--gold); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .price { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .ok { background: #1f331c; color: var(--ok); }
+  .wait { background: #3a2f14; color: var(--wait); }
+  .bad { background: #3a1c18; color: var(--bad); }
+  .empty { padding: 48px 20px; text-align: center; color: var(--muted); }
+  .empty strong { display: block; color: var(--text); font-size: 18px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Заявки на трекинг</h1>
+      <p class="sub">Все активные подписки из Telegram. Страница обновляется каждые 20 секунд.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>{{.Total}}</b><span>{{.TotalLabel}}</span></div>
+      <div class="stat"><b>{{.Products}}</b><span>{{.ProductsLabel}}</span></div>
+      <div class="stat"><b>{{.Users}}</b><span>{{.UsersLabel}}</span></div>
+    </div>
+  </header>
+
+  {{if .Rows}}
+  <table>
+    <thead>
+      <tr>
+        <th>Товар</th>
+        <th>Магазин</th>
+        <th>Цена</th>
+        <th>Статус</th>
+        <th>Проверено</th>
+        <th>Кто следит</th>
+        <th>Создана</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td>
+          <a href="{{.URL}}" target="_blank" rel="noopener">{{.Title}}</a>
+          <div class="muted mono">{{.ExternalKey}}</div>
+        </td>
+        <td>{{.Site}}<div class="muted">{{.City}}</div></td>
+        <td class="price">{{.Price}}</td>
+        <td><span class="badge {{.StatusClass}}">{{.Status}}</span></td>
+        <td class="muted">{{.Checked}}</td>
+        <td class="mono">{{.ChatID}}</td>
+        <td class="muted">{{.Created}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">
+    <strong>Заявок пока нет</strong>
+    Пришлите ссылку на товар боту в Telegram — она появится здесь.
+  </div>
+  {{end}}
+</main>
+</body>
+</html>
