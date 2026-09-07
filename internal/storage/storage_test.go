@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -165,6 +167,68 @@ func TestDeleteSubscription(t *testing.T) {
 	}
 	if removed {
 		t.Error("повторный DeleteSubscription вернул true, ожидалось false")
+	}
+}
+
+func TestSharedProductURLIsNotOverwritten(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	aliceURL := dnsURL
+	bobURL := "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/evil-slug/"
+
+	alice, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, aliceURL, "moscow")
+	if err != nil {
+		t.Fatalf("подписка Алисы: %v", err)
+	}
+	bob, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, bobURL, "moscow")
+	if err != nil {
+		t.Fatalf("подписка Боба: %v", err)
+	}
+	if bob.URL != aliceURL {
+		t.Errorf("Боб перезаписал URL общего товара: %q", bob.URL)
+	}
+
+	items, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil {
+		t.Fatalf("ListSubscriptions: %v", err)
+	}
+	if items[0].Product.URL != alice.URL {
+		t.Errorf("у Алисы URL стал %q", items[0].Product.URL)
+	}
+}
+
+func TestSubscriptionCap(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < MaxSubscriptions; i++ {
+		key := fmt.Sprintf("%08x%08x", i, i)
+		url := "https://www.dns-shop.ru/product/" + key + "/"
+		if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", key, url, "moscow"); err != nil {
+			t.Fatalf("подписка #%d: %v", i+1, err)
+		}
+	}
+
+	_, _, err := s.AddSubscription(ctx, chatAlice, "dns", "deadbeefdeadbeef", "https://www.dns-shop.ru/product/deadbeefdeadbeef/", "moscow")
+	if !errors.Is(err, ErrTooManySubscriptions) {
+		t.Fatalf("ожидалась ErrTooManySubscriptions, получено %v", err)
+	}
+
+	// Повтор уже существующей не должен упираться в потолок.
+	firstKey := fmt.Sprintf("%08x%08x", 0, 0)
+	_, created, err := s.AddSubscription(ctx, chatAlice, "dns", firstKey, "https://www.dns-shop.ru/product/"+firstKey+"/", "moscow")
+	if err != nil {
+		t.Fatalf("повтор существующей подписки: %v", err)
+	}
+	if created {
+		t.Error("повтор существующей подписки вернул created = true")
+	}
+}
+
+func TestOpenRejectsEmptyPath(t *testing.T) {
+	if _, err := Open(""); err == nil {
+		t.Fatal("Open(\"\") должен возвращать ошибку")
 	}
 }
 

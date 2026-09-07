@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -15,6 +16,11 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/config"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+)
+
+const (
+	requestTimeout = 5 * time.Second
+	unsubUnique    = "unsub"
 )
 
 const helpText = `Я слежу за ценами и пишу, когда они меняются.
@@ -74,7 +80,6 @@ func (b *Bot) routes() {
 	b.bot.Handle("/add", b.handleAdd)
 	b.bot.Handle(telebot.OnText, b.handleText)
 
-	// Кнопка «удалить» под каждым товаром в /list.
 	unsub := (&telebot.ReplyMarkup{}).Data("", unsubUnique)
 	b.bot.Handle(&unsub, b.handleUnsubButton)
 }
@@ -98,12 +103,18 @@ func (b *Bot) accessMiddleware(next telebot.HandlerFunc) telebot.HandlerFunc {
 			b.log.Warn("отказано в доступе", "user_id", sender.ID, "username", sender.Username)
 			return c.Send("Этот бот приватный.")
 		}
+		chat := c.Chat()
+		if chat == nil || chat.Type != telebot.ChatPrivate {
+			return c.Send("Я работаю только в личных сообщениях.")
+		}
 		return next(c)
 	}
 }
 
 func (b *Bot) handleStart(c telebot.Context) error {
-	if _, err := b.store.EnsureUser(context.Background(), c.Chat().ID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	if _, err := b.store.EnsureUser(ctx, c.Chat().ID); err != nil {
 		return err
 	}
 	return c.Send(helpText, telebot.NoPreview)
@@ -113,7 +124,6 @@ func (b *Bot) handleHelp(c telebot.Context) error {
 	return c.Send(helpText, telebot.NoPreview)
 }
 
-// handleText принимает ссылку, присланную без команды.
 func (b *Bot) handleText(c telebot.Context) error {
 	text := strings.TrimSpace(c.Text())
 	if text == "" {
@@ -139,9 +149,17 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 		return c.Send(explainParseError(err), telebot.NoPreview)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
 	product, created, err := b.store.AddSubscription(
-		context.Background(), c.Chat().ID,
+		ctx, c.Chat().ID,
 		string(ref.Site), ref.ExternalKey, ref.URL, b.cfg.DefaultCity)
+	if errors.Is(err, storage.ErrTooManySubscriptions) {
+		return c.Send(fmt.Sprintf(
+			"Уже отслеживаю %d товаров — это максимум. Снимите что-нибудь через /list или /del.",
+			storage.MaxSubscriptions), telebot.NoPreview)
+	}
 	if err != nil {
 		return err
 	}
@@ -156,35 +174,24 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 	return c.Send(fmt.Sprintf(
 		"Добавил в отслеживание.\n\n%s\nМагазин: %s\nГород: %s\n\n"+
 			"Проверяю раз в %s и напишу, когда цена изменится.",
-		linkTo(product), ref.Site.Title(), b.cfg.DefaultCity, humanDuration(b.cfg.CheckInterval),
+		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(b.cfg.DefaultCity), humanDuration(b.cfg.CheckInterval),
 	), telebot.NoPreview)
 }
 
 func (b *Bot) handleList(c telebot.Context) error {
-	items, err := b.store.ListSubscriptions(context.Background(), c.Chat().ID)
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	text, markup, err := b.listContent(ctx, c.Chat().ID)
 	if err != nil {
 		return err
 	}
-	if len(items) == 0 {
-		return c.Send("Список пуст. Пришлите ссылку на товар, чтобы начать.", telebot.NoPreview)
+	if markup == nil {
+		return c.Send(text, telebot.NoPreview)
 	}
-
-	markup := &telebot.ReplyMarkup{}
-	var rows []telebot.Row
-	var sb strings.Builder
-
-	fmt.Fprintf(&sb, "Отслеживаю товаров: %d\n", len(items))
-	for i, item := range items {
-		fmt.Fprintf(&sb, "\n%d. %s\n   %s", i+1, linkTo(item.Product), describePrice(item))
-		rows = append(rows, markup.Row(markup.Data(
-			fmt.Sprintf("🗑 %d", i+1), unsubUnique, strconv.FormatInt(item.Product.ID, 10))))
-	}
-	markup.Inline(rows...)
-
-	return c.Send(sb.String(), markup, telebot.NoPreview)
+	return c.Send(text, markup, telebot.NoPreview)
 }
 
-// handleDelete удаляет товар по порядковому номеру из /list.
 func (b *Bot) handleDelete(c telebot.Context) error {
 	args := c.Args()
 	if len(args) == 0 {
@@ -196,7 +203,10 @@ func (b *Bot) handleDelete(c telebot.Context) error {
 		return c.Send("Номер должен быть положительным числом. Посмотрите /list.", telebot.NoPreview)
 	}
 
-	items, err := b.store.ListSubscriptions(context.Background(), c.Chat().ID)
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	items, err := b.store.ListSubscriptions(ctx, c.Chat().ID)
 	if err != nil {
 		return err
 	}
@@ -205,39 +215,76 @@ func (b *Bot) handleDelete(c telebot.Context) error {
 	}
 
 	item := items[n-1]
-	if _, err := b.store.DeleteSubscription(context.Background(), c.Chat().ID, item.Product.ID); err != nil {
-		return err
-	}
-	return c.Send("Снял с отслеживания:\n"+linkTo(item.Product), telebot.NoPreview)
-}
-
-const unsubUnique = "unsub"
-
-func (b *Bot) handleUnsubButton(c telebot.Context) error {
-	productID, err := strconv.ParseInt(c.Data(), 10, 64)
-	if err != nil {
-		return c.Respond(&telebot.CallbackResponse{Text: "Не понял, какой это товар", ShowAlert: true})
-	}
-
-	removed, err := b.store.DeleteSubscription(context.Background(), c.Chat().ID, productID)
+	removed, err := b.store.DeleteSubscription(ctx, c.Chat().ID, item.Product.ID)
 	if err != nil {
 		return err
 	}
 	if !removed {
-		return c.Respond(&telebot.CallbackResponse{Text: "Этого товара уже нет в списке"})
+		return c.Send("Этого товара уже нет в списке. Посмотрите /list.", telebot.NoPreview)
+	}
+	return c.Send("Снял с отслеживания:\n"+linkTo(item.Product), telebot.NoPreview)
+}
+
+func (b *Bot) handleUnsubButton(c telebot.Context) error {
+	productID, err := strconv.ParseInt(c.Data(), 10, 64)
+	if err != nil || productID < 1 {
+		return c.Respond(&telebot.CallbackResponse{Text: "Не понял, какой это товар", ShowAlert: true})
 	}
 
-	if err := c.Respond(&telebot.CallbackResponse{Text: "Снято с отслеживания"}); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	removed, err := b.store.DeleteSubscription(ctx, c.Chat().ID, productID)
+	if err != nil {
 		return err
 	}
-	// Перерисовываем список, чтобы номера и кнопки не разъезжались с реальностью.
-	return b.handleList(c)
+
+	text := "Снято с отслеживания"
+	if !removed {
+		text = "Этого товара уже нет в списке"
+	}
+	if err := c.Respond(&telebot.CallbackResponse{Text: text}); err != nil {
+		return err
+	}
+
+	listText, markup, err := b.listContent(ctx, c.Chat().ID)
+	if err != nil {
+		return err
+	}
+	if markup == nil {
+		return c.Edit(listText, telebot.NoPreview)
+	}
+	return c.Edit(listText, markup, telebot.NoPreview)
+}
+
+func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.ReplyMarkup, error) {
+	items, err := b.store.ListSubscriptions(ctx, chatID)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(items) == 0 {
+		return "Список пуст. Пришлите ссылку на товар, чтобы начать.", nil, nil
+	}
+
+	markup := &telebot.ReplyMarkup{}
+	var rows []telebot.Row
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "Отслеживаю товаров: %d\n", len(items))
+	for i, item := range items {
+		fmt.Fprintf(&sb, "\n%d. %s\n   %s", i+1, linkTo(item.Product), html.EscapeString(describePrice(item)))
+		rows = append(rows, markup.Row(markup.Data(
+			fmt.Sprintf("🗑 %d", i+1), unsubUnique, strconv.FormatInt(item.Product.ID, 10))))
+	}
+	markup.Inline(rows...)
+	return sb.String(), markup, nil
 }
 
 func explainParseError(err error) string {
 	switch {
 	case errors.Is(err, sites.ErrNotSupported):
-		return "Этот магазин я пока не умею: " + strings.TrimPrefix(err.Error(), sites.ErrNotSupported.Error()+": ") +
+		name := strings.TrimPrefix(err.Error(), sites.ErrNotSupported.Error()+": ")
+		return "Этот магазин я пока не умею: " + html.EscapeString(name) +
 			".\nСейчас работает только DNS."
 	case errors.Is(err, sites.ErrUnknownSite):
 		return "Не узнаю этот магазин. Сейчас работает только DNS."
@@ -249,7 +296,7 @@ func explainParseError(err error) string {
 }
 
 func linkTo(p storage.Product) string {
-	return fmt.Sprintf(`<a href="%s">%s</a>`, p.URL, escapeHTML(p.Title()))
+	return fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(p.URL), html.EscapeString(p.Title()))
 }
 
 func describePrice(t storage.Tracked) string {
@@ -265,6 +312,9 @@ func describePrice(t storage.Tracked) string {
 
 // formatKopecks печатает цену с разделением разрядов: 15999900 -> "159 999 ₽".
 func formatKopecks(kopecks int64) string {
+	if kopecks < 0 {
+		return "0\u00a0₽"
+	}
 	whole := kopecks / 100
 	digits := strconv.FormatInt(whole, 10)
 
@@ -287,10 +337,4 @@ func humanDuration(d time.Duration) string {
 		return fmt.Sprintf("%d ч", int(d.Hours()))
 	}
 	return fmt.Sprintf("%d мин", int(d.Minutes()))
-}
-
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	return strings.ReplaceAll(s, ">", "&gt;")
 }

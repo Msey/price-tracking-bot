@@ -36,7 +36,7 @@ type Ref struct {
 	// ExternalKey — идентификатор товара внутри магазина. Он стабилен:
 	// не меняется при переименовании товара или смене slug в URL.
 	ExternalKey string
-	// URL приведён к каноническому виду, без query и фрагмента.
+	// URL приведён к каноническому виду, без query, фрагмента и slug.
 	URL string
 }
 
@@ -63,7 +63,7 @@ func (s Site) Supported() bool {
 
 // dnsProductPath вытаскивает идентификатор товара из пути вида
 // /product/9ee3a4f41358d9cb/146-noutbuk-honor-magicbook-pro-14/
-var dnsProductPath = regexp.MustCompile(`^/product/([0-9a-f]{8,32})(?:/|$)`)
+var dnsProductPath = regexp.MustCompile(`(?i)^/product/([0-9a-f]{8,32})(?:/|$)`)
 
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
 // Telegram часто присылает её вместе с подписью.
@@ -80,8 +80,12 @@ func Parse(raw string) (Ref, error) {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return Ref{}, ErrNotALink
 	}
+	if u.User != nil {
+		// https://evil@www.dns-shop.ru/... не должно выглядеть как DNS.
+		return Ref{}, ErrNotALink
+	}
 
-	host := strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+	host := strings.ToLower(u.Hostname())
 	site, ok := siteByHost(host)
 	if !ok {
 		return Ref{}, ErrUnknownSite
@@ -94,26 +98,23 @@ func Parse(raw string) (Ref, error) {
 	if m == nil {
 		return Ref{}, ErrNotAProduct
 	}
+	key := strings.ToLower(m[1])
 
-	// Query отбрасываем: в ссылках DNS там utm-метки и параметр city,
-	// который иначе размножил бы один товар на несколько записей в базе.
-	canonical := url.URL{Scheme: "https", Host: "www.dns-shop.ru", Path: u.EscapedPath()}
-	if !strings.HasSuffix(canonical.Path, "/") {
-		canonical.Path += "/"
-	}
-
-	return Ref{Site: DNS, ExternalKey: m[1], URL: canonical.String()}, nil
+	// Канон без slug, query и userinfo: иначе второй подписчик мог бы
+	// подменить отображаемую ссылку, а в href попал бы непроверенный путь.
+	canonical := "https://www.dns-shop.ru/product/" + key + "/"
+	return Ref{Site: DNS, ExternalKey: key, URL: canonical}, nil
 }
 
 func siteByHost(host string) (Site, bool) {
-	switch {
-	case host == "dns-shop.ru" || strings.HasSuffix(host, ".dns-shop.ru"):
+	switch host {
+	case "dns-shop.ru", "www.dns-shop.ru":
 		return DNS, true
-	case host == "wildberries.ru" || strings.HasSuffix(host, ".wildberries.ru"):
+	case "wildberries.ru", "www.wildberries.ru":
 		return Wildberries, true
-	case host == "ozon.ru" || strings.HasSuffix(host, ".ozon.ru"):
+	case "ozon.ru", "www.ozon.ru":
 		return Ozon, true
-	case host == "market.yandex.ru" || host == "market.yandex.by":
+	case "market.yandex.ru", "www.market.yandex.ru", "market.yandex.by":
 		return YandexMarket, true
 	default:
 		return "", false
@@ -123,5 +124,7 @@ func siteByHost(host string) (Site, bool) {
 var urlInText = regexp.MustCompile(`https?://[^\s<>"']+`)
 
 func extractURL(s string) string {
-	return urlInText.FindString(strings.TrimSpace(s))
+	raw := urlInText.FindString(strings.TrimSpace(s))
+	// Telegram и мессенджеры часто оборачивают ссылку в скобки или ставят точку в конце.
+	return strings.TrimRight(raw, ".,);]!?»")
 }

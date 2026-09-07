@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +16,11 @@ import (
 
 // ErrNoToken возвращается, когда BOT_TOKEN не задан.
 var ErrNoToken = errors.New("config: BOT_TOKEN не задан")
+
+var (
+	tokenShape = regexp.MustCompile(`^\d{5,}:[A-Za-z0-9_-]{20,}$`)
+	cityShape  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+)
 
 type Config struct {
 	BotToken      string
@@ -27,18 +34,19 @@ type Config struct {
 // Load читает .env, если он есть, и собирает конфигурацию.
 // Отсутствие .env не ошибка: в production переменные приходят из окружения.
 func Load() (Config, error) {
-	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
-		return Config{}, fmt.Errorf("config: чтение .env: %w", err)
-	}
+	loadDotEnv()
 
 	cfg := Config{
 		BotToken:     strings.TrimSpace(os.Getenv("BOT_TOKEN")),
 		DatabasePath: envOr("DATABASE_PATH", "bot.db"),
-		DefaultCity:  envOr("DEFAULT_CITY", "moscow"),
+		DefaultCity:  strings.ToLower(envOr("DEFAULT_CITY", "moscow")),
 		AllowedUsers: map[int64]bool{},
 	}
 	if cfg.BotToken == "" {
 		return Config{}, ErrNoToken
+	}
+	if !tokenShape.MatchString(cfg.BotToken) {
+		return Config{}, errors.New("config: BOT_TOKEN не похож на токен Telegram")
 	}
 
 	interval, err := time.ParseDuration(envOr("CHECK_INTERVAL", "20m"))
@@ -49,6 +57,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: CHECK_INTERVAL меньше минуты (%s), это гарантированный бан", interval)
 	}
 	cfg.CheckInterval = interval
+
+	if !cityShape.MatchString(cfg.DefaultCity) {
+		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)
+	}
 
 	for _, raw := range strings.Split(os.Getenv("ALLOWED_USERS"), ",") {
 		raw = strings.TrimSpace(raw)
@@ -71,6 +83,16 @@ func (c Config) Allowed(userID int64) bool {
 		return true
 	}
 	return c.AllowedUsers[userID]
+}
+
+func loadDotEnv() {
+	// Сначала cwd — удобно при разработке. Потом каталог бинарника: при
+	// автозапуске Windows рабочая папка часто System32, и .env рядом с exe
+	// иначе не находится. Load не перезаписывает уже заданные переменные.
+	_ = godotenv.Load()
+	if exe, err := os.Executable(); err == nil {
+		_ = godotenv.Load(filepath.Join(filepath.Dir(exe), ".env"))
+	}
 }
 
 func envOr(key, fallback string) string {

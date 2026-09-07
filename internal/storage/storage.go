@@ -4,11 +4,20 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 
 	_ "modernc.org/sqlite" // драйвер SQLite на чистом Go, без CGO
 )
+
+// MaxSubscriptions — потолок активных подписок на одного пользователя.
+// Упирается не в SQLite, а в Telegram (клавиатура до 100 кнопок, сообщение до 4096
+// символов) и в то, что DNS после серии быстрых запросов банит IP.
+const MaxSubscriptions = 50
+
+// ErrTooManySubscriptions — пользователь уже держит MaxSubscriptions товаров.
+var ErrTooManySubscriptions = errors.New("слишком много подписок")
 
 type Store struct {
 	db *sql.DB
@@ -47,10 +56,12 @@ type Tracked struct {
 
 // Open открывает базу и приводит схему к актуальной версии.
 func Open(path string) (*Store, error) {
-	// busy_timeout спасает от "database is locked", когда планировщик пишет
-	// историю цен одновременно с ответом на команду пользователя.
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", dsn)
+	if path == "" {
+		return nil, fmt.Errorf("storage: пустой путь к базе")
+	}
+	// Путь передаём как имя файла, не как SQLite URI: иначе символы ? и &
+	// в DATABASE_PATH превратились бы в параметры подключения.
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("storage: открытие %s: %w", path, err)
 	}
@@ -61,6 +72,17 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("storage: соединение с %s: %w", path, err)
+	}
+
+	for _, pragma := range []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA foreign_keys = ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("storage: %s: %w", pragma, err)
+		}
 	}
 
 	s := &Store{db: db}
@@ -103,24 +125,42 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 		return Product{}, false, fmt.Errorf("storage: регистрация пользователя %d: %w", chatID, err)
 	}
 
-	product := Product{Site: site, ExternalKey: externalKey, URL: productURL, City: city}
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO products (site, external_key, url, city) VALUES (?, ?, ?, ?)
-		ON CONFLICT (site, external_key, city) DO UPDATE SET url = excluded.url
-		RETURNING id, name`, site, externalKey, productURL, city).Scan(&product.ID, &product.Name); err != nil {
-		return Product{}, false, fmt.Errorf("storage: сохранение товара %s/%s: %w", site, externalKey, err)
+	var existing Product
+	err = tx.QueryRowContext(ctx, `
+		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
+		FROM products p
+		JOIN subscriptions s ON s.product_id = p.id AND s.user_id = ? AND s.active = 1
+		WHERE p.site = ? AND p.external_key = ? AND p.city = ?`,
+		userID, site, externalKey, city,
+	).Scan(&existing.ID, &existing.Site, &existing.ExternalKey, &existing.URL, &existing.Name, &existing.City)
+	switch {
+	case err == nil:
+		if err := tx.Commit(); err != nil {
+			return Product{}, false, fmt.Errorf("storage: фиксация транзакции: %w", err)
+		}
+		return existing, false, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return Product{}, false, fmt.Errorf("storage: поиск существующей подписки: %w", err)
 	}
 
-	// RowsAffected тут не помощник: SQLite сообщает об одной строке и для
-	// вставки, и для ветки DO UPDATE. Поэтому проверяем наличие заранее —
-	// внутри транзакции это безопасно.
-	var alreadyActive bool
+	var n int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (
-		    SELECT 1 FROM subscriptions
-		    WHERE user_id = ? AND product_id = ? AND active = 1
-		)`, userID, product.ID).Scan(&alreadyActive); err != nil {
-		return Product{}, false, fmt.Errorf("storage: проверка подписки на товар %d: %w", product.ID, err)
+		SELECT COUNT(*) FROM subscriptions WHERE user_id = ? AND active = 1`, userID).Scan(&n); err != nil {
+		return Product{}, false, fmt.Errorf("storage: подсчёт подписок: %w", err)
+	}
+	if n >= MaxSubscriptions {
+		return Product{}, false, ErrTooManySubscriptions
+	}
+
+	product := Product{Site: site, ExternalKey: externalKey, URL: productURL, City: city}
+	// id = id — намеренный no-op: SQLite не возвращает строку при DO NOTHING,
+	// а URL общего товара трогать нельзя, иначе второй подписчик перезапишет
+	// ссылку у всех остальных.
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO products (site, external_key, url, city) VALUES (?, ?, ?, ?)
+		ON CONFLICT (site, external_key, city) DO UPDATE SET id = id
+		RETURNING id, name, url`, site, externalKey, productURL, city).Scan(&product.ID, &product.Name, &product.URL); err != nil {
+		return Product{}, false, fmt.Errorf("storage: сохранение товара %s/%s: %w", site, externalKey, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -132,7 +172,7 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	if err := tx.Commit(); err != nil {
 		return Product{}, false, fmt.Errorf("storage: фиксация транзакции: %w", err)
 	}
-	return product, !alreadyActive, nil
+	return product, true, nil
 }
 
 // ListSubscriptions возвращает активные подписки пользователя.
