@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
+	"github.com/Msey/price-tracking-bot/internal/gui"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/telegram"
 	"github.com/Msey/price-tracking-bot/internal/tracker"
@@ -18,6 +20,7 @@ import (
 )
 
 func main() {
+	runtime.LockOSThread()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	if err := run(log); err != nil {
@@ -33,6 +36,10 @@ func run(log *slog.Logger) error {
 	}
 	if err != nil {
 		return err
+	}
+	if cfg.GUI && gui.Available() && gui.ActivateExisting() {
+		log.Info("окно уже открыто, активирую существующий процесс")
+		return nil
 	}
 
 	store, err := storage.Open(cfg.DatabasePath)
@@ -77,7 +84,16 @@ func run(log *slog.Logger) error {
 		"fetch_gap", cfg.FetchGap,
 		"per_cycle", cfg.FetchPerCycle,
 		"city", cfg.DefaultCity,
-		"ui", cfg.UIAddr)
+		"ui", cfg.UIAddr,
+		"gui", cfg.GUI && gui.Available())
+
+	if cfg.GUI && gui.Available() {
+		go bot.Start(ctx)
+		err := gui.Run(ctx, gui.Options{Store: store, DataPath: cfg.DatabasePath, Log: log})
+		stop()
+		log.Info("бот остановлен")
+		return err
+	}
 
 	bot.Start(ctx)
 	log.Info("бот остановлен")

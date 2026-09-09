@@ -373,3 +373,34 @@ func TestListAllRequests(t *testing.T) {
 		t.Fatalf("после удаления: %+v", got)
 	}
 }
+
+func TestHistoriesOldestFirst(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, price := range []int64{10000, 20000, 30000} {
+		if err := s.RecordSnapshot(ctx, p.ID, "Honor", price, "RUB", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	empty, err := s.Histories(ctx, nil, 2)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("пустой список: %v %#v", err, empty)
+	}
+
+	got, err := s.Histories(ctx, []int64{p.ID}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pts := got[p.ID]
+	if len(pts) != 2 {
+		t.Fatalf("точек %d, ожидалось 2", len(pts))
+	}
+	if pts[0].PriceKopecks != 20000 || pts[1].PriceKopecks != 30000 {
+		t.Errorf("порядок цен: %d, %d", pts[0].PriceKopecks, pts[1].PriceKopecks)
+	}
+}

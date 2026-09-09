@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -109,6 +110,60 @@ func (s *Store) LastSnapshots(ctx context.Context, productID int64, n int) ([]Sn
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+const defaultHistoryLimit = 90
+
+// Histories возвращает последние limit замеров по каждому товару,
+// уже в порядке от старых к новым — так удобнее рисовать график.
+func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (map[int64][]SnapshotRow, error) {
+	out := make(map[int64][]SnapshotRow, len(productIDs))
+	if len(productIDs) == 0 {
+		return out, nil
+	}
+	if limit < 1 {
+		limit = defaultHistoryLimit
+	}
+
+	placeholders := make([]string, len(productIDs))
+	args := make([]any, 0, len(productIDs)+1)
+	for i, id := range productIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, limit)
+
+	q := fmt.Sprintf(`
+		SELECT product_id, price_kopecks, available, checked_at
+		FROM (
+		    SELECT product_id, price_kopecks, available, checked_at,
+		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
+		    FROM price_history
+		    WHERE product_id IN (%s)
+		)
+		WHERE rn <= ?
+		ORDER BY product_id, checked_at ASC, rn DESC`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: истории цен: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var r SnapshotRow
+		var avail int
+		if err := rows.Scan(&id, &r.PriceKopecks, &avail, &r.CheckedAt); err != nil {
+			return nil, fmt.Errorf("storage: чтение истории: %w", err)
+		}
+		r.Available = avail != 0
+		out[id] = append(out[id], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: обход историй: %w", err)
+	}
+	return out, nil
 }
 
 // NotifiedState — последняя цена, о которой уже сообщили подписчикам.

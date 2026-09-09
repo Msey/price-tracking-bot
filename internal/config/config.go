@@ -39,6 +39,8 @@ type Config struct {
 	// UIAddr — адрес локальной страницы со всеми заявками.
 	// Пусто или "off" — не поднимать HTTP.
 	UIAddr string
+	// GUI — нативное окно со списком ссылок и графиками. Выключается GUI=off.
+	GUI bool
 }
 
 // Load читает .env, если он есть, и собирает конфигурацию.
@@ -108,6 +110,7 @@ func Load() (Config, error) {
 	if strings.EqualFold(cfg.UIAddr, "off") || cfg.UIAddr == "-" {
 		cfg.UIAddr = ""
 	}
+	cfg.GUI = parseOnOff(envOr("GUI", "1"))
 
 	if !cityShape.MatchString(cfg.DefaultCity) {
 		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)
@@ -151,4 +154,13 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseOnOff(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "0", "off", "false", "-", "no":
+		return false
+	default:
+		return true
+	}
 }

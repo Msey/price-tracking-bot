@@ -12,6 +12,7 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	t.Setenv("CHECK_INTERVAL", "20m")
 	t.Setenv("DEFAULT_CITY", "moscow")
 	t.Setenv("ALLOWED_USERS", "")
+	t.Setenv("GUI", "1")
 
 	cfg, err := Load()
 	if err != nil {
@@ -25,6 +26,9 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	}
 	if cfg.UIAddr != "127.0.0.1:8080" {
 		t.Errorf("UIAddr = %q", cfg.UIAddr)
+	}
+	if !cfg.GUI {
+		t.Error("GUI по умолчанию должен быть включён")
 	}
 }
 
@@ -92,5 +96,20 @@ func TestLoadDisablesUI(t *testing.T) {
 	}
 	if cfg.UIAddr != "" {
 		t.Errorf("UIAddr = %q, ожидалась пустая строка", cfg.UIAddr)
+	}
+}
+
+func TestLoadDisablesGUI(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
+	t.Setenv("DEFAULT_CITY", "moscow")
+	t.Setenv("CHECK_INTERVAL", "20m")
+	t.Setenv("GUI", "off")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GUI {
+		t.Error("GUI должен быть выключен")
 	}
 }
