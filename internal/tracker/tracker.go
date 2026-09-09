@@ -7,15 +7,15 @@ import (
 	"html"
 	"log/slog"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/money"
-	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
-// Fetcher ходит за ценой. Реализация для DNS — Chrome, для тестов — заглушка.
+// Fetcher ходит за ценой. Реализация для магазинов — Chrome, для тестов — заглушка.
 type Fetcher interface {
 	Fetch(ctx context.Context, p storage.Product) (fetch.Snapshot, error)
 }
@@ -33,15 +33,15 @@ type Config struct {
 }
 
 type Tracker struct {
-	store   *storage.Store
-	dns     Fetcher
-	notify  Notifier
-	cfg     Config
-	log     *slog.Logger
-	lastHit time.Time
+	store    *storage.Store
+	fetchers map[string]Fetcher
+	notify   Notifier
+	cfg      Config
+	log      *slog.Logger
+	lastHit  time.Time
 }
 
-func New(store *storage.Store, dns Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
+func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
 	if cfg.Interval < 10*time.Minute {
 		cfg.Interval = 10 * time.Minute
 	}
@@ -57,7 +57,10 @@ func New(store *storage.Store, dns Fetcher, notify Notifier, cfg Config, log *sl
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Tracker{store: store, dns: dns, notify: notify, cfg: cfg, log: log}
+	if fetchers == nil {
+		fetchers = map[string]Fetcher{}
+	}
+	return &Tracker{store: store, fetchers: fetchers, notify: notify, cfg: cfg, log: log}
 }
 
 // Run крутит циклы, пока жив контекст. Первый заход не сразу: после рестарта
@@ -67,7 +70,8 @@ func (t *Tracker) Run(ctx context.Context) {
 		"interval", t.cfg.Interval,
 		"gap", t.cfg.FetchGap,
 		"per_cycle", t.cfg.PerCycle,
-		"startup_delay", t.cfg.StartupDelay)
+		"startup_delay", t.cfg.StartupDelay,
+		"sites", t.siteNames())
 
 	if !sleepCtx(ctx, t.cfg.StartupDelay) {
 		return
@@ -81,30 +85,49 @@ func (t *Tracker) Run(ctx context.Context) {
 	}
 }
 
+func (t *Tracker) siteNames() []string {
+	out := make([]string, 0, len(t.fetchers))
+	for site := range t.fetchers {
+		out = append(out, site)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (t *Tracker) cycle(ctx context.Context) {
-	if ctx.Err() != nil {
+	for _, site := range t.siteNames() {
+		if ctx.Err() != nil {
+			return
+		}
+		t.cycleSite(ctx, site)
+	}
+}
+
+func (t *Tracker) cycleSite(ctx context.Context, site string) {
+	f := t.fetchers[site]
+	if f == nil {
 		return
 	}
-	if paused, ok := t.dns.(interface {
+	if paused, ok := f.(interface {
 		Paused() (time.Time, string, bool)
 	}); ok {
 		if until, reason, on := paused.Paused(); on {
-			t.log.Warn("dns: цикл пропущен, предохранитель", "until", until, "reason", reason)
+			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
 			return
 		}
 	}
 
-	due, err := t.store.ProductsDue(ctx, string(sites.DNS), time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
+	due, err := t.store.ProductsDue(ctx, site, time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
 	if err != nil {
-		t.log.Error("список товаров к проверке", "error", err)
+		t.log.Error("список товаров к проверке", "site", site, "error", err)
 		return
 	}
 	if len(due) == 0 {
-		t.log.Info("dns: нечего проверять")
+		t.log.Info("нечего проверять", "site", site)
 		return
 	}
 
-	t.log.Info("dns: цикл проверки", "count", len(due))
+	t.log.Info("цикл проверки", "site", site, "count", len(due))
 	for i, p := range due {
 		if ctx.Err() != nil {
 			return
@@ -117,12 +140,12 @@ func (t *Tracker) cycle(ctx context.Context) {
 		}
 		t.lastHit = time.Now()
 		if err := t.checkOne(ctx, p); err != nil {
-			t.log.Warn("dns: проверка не удалась", "product", p.ID, "url", p.URL, "error", err)
+			t.log.Warn("проверка не удалась", "site", site, "product", p.ID, "url", p.URL, "error", err)
 			kind := "fetch"
 			if errors.Is(err, fetch.ErrChallenge) {
 				kind = "challenge"
 				_ = t.store.RecordFetchError(ctx, p.ID, p.Site, kind, err.Error())
-				t.log.Warn("dns: цикл остановлен из-за челленджа, остальные товары подождут")
+				t.log.Warn("цикл сайта остановлен из-за челленджа", "site", site)
 				return
 			}
 			_ = t.store.RecordFetchError(ctx, p.ID, p.Site, kind, err.Error())
@@ -131,7 +154,11 @@ func (t *Tracker) cycle(ctx context.Context) {
 }
 
 func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
-	snap, err := t.dns.Fetch(ctx, p)
+	f := t.fetchers[p.Site]
+	if f == nil {
+		return fmt.Errorf("нет загрузчика для сайта %s", p.Site)
+	}
+	snap, err := f.Fetch(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -238,12 +265,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	t := time.NewTimer(d)
-	defer t.Stop()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-t.C:
+	case <-timer.C:
 		return true
 	}
 }

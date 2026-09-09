@@ -44,7 +44,7 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 
 	dns := &fakeDNS{price: 10000}
 	notes := &fakeNotify{}
-	tr := New(store, dns, notes, Config{
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
 		Interval:     20 * time.Minute,
 		FetchGap:     30 * time.Second,
 		PerCycle:     8,

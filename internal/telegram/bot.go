@@ -34,9 +34,9 @@ const helpText = `Я слежу за ценами и пишу, когда они
 /help — эта справка
 
 <b>Магазины</b>
-Сейчас работает DNS. Проверяю не чаще чем раз в указанный интервал, между карточками пауза — иначе магазин банит.
+Сейчас работают DNS и Яндекс.Маркет. Проверяю не чаще чем раз в указанный интервал, между карточками пауза — иначе магазин банит.
 
-Wildberries, Ozon и Яндекс.Маркет на очереди.`
+Wildberries и Ozon на очереди.`
 
 type Bot struct {
 	bot   *telebot.Bot
@@ -294,11 +294,11 @@ func explainParseError(err error) string {
 	case errors.Is(err, sites.ErrNotSupported):
 		name := strings.TrimPrefix(err.Error(), sites.ErrNotSupported.Error()+": ")
 		return "Этот магазин я пока не умею: " + html.EscapeString(name) +
-			".\nСейчас работает только DNS."
+			".\nСейчас работают DNS и Яндекс.Маркет."
 	case errors.Is(err, sites.ErrUnknownSite):
-		return "Не узнаю этот магазин. Сейчас работает только DNS."
+		return "Не узнаю этот магазин. Сейчас работают DNS и Яндекс.Маркет."
 	case errors.Is(err, sites.ErrNotAProduct):
-		return "Похоже, это не карточка товара. Нужна ссылка вида\nhttps://www.dns-shop.ru/product/..."
+		return "Похоже, это не карточка товара. Нужна ссылка на товар DNS или Яндекс.Маркета."
 	default:
 		return "Это не похоже на ссылку. Пришлите адрес карточки товара."
 	}

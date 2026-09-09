@@ -8,7 +8,8 @@ import (
 
 // Options — данные, с которыми поднимается окно.
 type Options struct {
-	Store    *storage.Store
-	DataPath string
-	Log      *slog.Logger
+	Store       *storage.Store
+	DataPath    string
+	Log         *slog.Logger
+	StartHidden bool
 }

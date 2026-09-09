@@ -254,8 +254,13 @@ func Run(ctx context.Context, opt Options) error {
 	go a.poll(ctx)
 
 	a.refresh(false)
-	opt.Log.Info("графический интерфейс", "tray", true)
-	a.mw.Show()
+	opt.Log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
+	if opt.StartHidden {
+		a.hideToTray()
+		_ = ni.ShowInfo("Трекинг цен", "Бот в трее. Щелчок по иконке открывает окно.")
+	} else {
+		a.mw.Show()
+	}
 	a.mw.Run()
 
 	_ = ni.Dispose()

@@ -5,13 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
@@ -36,20 +33,16 @@ const (
 	})()`
 )
 
-// DNS читает карточки через один долгоживущий Chrome.
+// DNS читает карточки через общий Chrome.
 type DNS struct {
-	mu            sync.Mutex
-	log           *slog.Logger
-	profileDir    string
-	chromePath    string
-	headless      bool
-	breaker       *Breaker
-	allocCancel   context.CancelFunc
-	browser       context.Context
-	browserCancel context.CancelFunc
+	browser *Browser
+	owned   bool
+	log     *slog.Logger
+	breaker *Breaker
 }
 
 type DNSOptions struct {
+	Browser         *Browser
 	ProfileDir      string
 	ChromePath      string
 	Headless        bool
@@ -61,31 +54,29 @@ func NewDNS(opt DNSOptions) *DNS {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
+	br := opt.Browser
+	owned := false
+	if br == nil {
+		br = NewBrowser(BrowserOptions{
+			ProfileDir: opt.ProfileDir,
+			ChromePath: opt.ChromePath,
+			Headless:   opt.Headless,
+			Log:        opt.Log,
+		})
+		owned = true
+	}
 	return &DNS{
-		log:        opt.Log,
-		profileDir: opt.ProfileDir,
-		chromePath: opt.ChromePath,
-		headless:   opt.Headless,
-		breaker:    NewBreaker(opt.CircuitCooldown),
+		browser: br,
+		owned:   owned,
+		log:     opt.Log,
+		breaker: NewBreaker(opt.CircuitCooldown),
 	}
 }
 
 func (d *DNS) Close() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.stopLocked()
-}
-
-func (d *DNS) stopLocked() {
-	if d.browserCancel != nil {
-		d.browserCancel()
-		d.browserCancel = nil
+	if d.owned && d.browser != nil {
+		d.browser.Close()
 	}
-	if d.allocCancel != nil {
-		d.allocCancel()
-		d.allocCancel = nil
-	}
-	d.browser = nil
 }
 
 func (d *DNS) Breaker() *Breaker { return d.breaker }
@@ -98,34 +89,14 @@ func (d *DNS) Fetch(ctx context.Context, p storage.Product) (Snapshot, error) {
 			ErrChallenge, d.breaker.RetryAt().Format(time.RFC3339), d.breaker.Reason())
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if err := d.ensureBrowserLocked(); err != nil {
-		return Snapshot{}, err
-	}
-
-	runCtx, cancel := context.WithTimeout(d.browser, pageWait+15*time.Second)
-	defer cancel()
-
-	actions := []chromedp.Action{
-		network.Enable(),
-		network.SetBlockedURLs([]string{
-			"*.woff", "*.woff2", "*.ttf", "*.mp4", "*.webm",
-		}),
-		hideWebdriver(),
-		setCityCookie(p.City),
-		chromedp.Navigate(p.URL),
-	}
-	if err := chromedp.Run(runCtx, actions...); err != nil {
-		d.maybeTrip(err)
-		return Snapshot{}, fmt.Errorf("dns: навигация %s: %w", p.URL, err)
-	}
-
-	snap, err := waitForPrice(runCtx)
+	actions := append(pageSetup(), setCityCookie(p.City), chromedp.Navigate(p.URL))
+	snap, err := d.browser.do(pageWait, actions, extractJS, parseBits)
 	if err != nil {
 		d.maybeTrip(err)
-		return Snapshot{}, err
+		if errors.Is(err, ErrChallenge) || errors.Is(err, ErrNoPrice) || errors.Is(err, context.DeadlineExceeded) {
+			return Snapshot{}, err
+		}
+		return Snapshot{}, fmt.Errorf("dns: навигация %s: %w", p.URL, err)
 	}
 	return snap, nil
 }
@@ -153,57 +124,6 @@ func isBanError(err error) bool {
 	return false
 }
 
-func (d *DNS) ensureBrowserLocked() error {
-	if d.browser != nil {
-		return nil
-	}
-	if d.profileDir != "" {
-		if err := os.MkdirAll(d.profileDir, 0o755); err != nil {
-			return fmt.Errorf("dns: профиль chrome: %w", err)
-		}
-	}
-
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserAgent(chromeUA),
-		chromedp.Flag("headless", d.headless),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("mute-audio", true),
-		chromedp.Flag("start-minimized", true),
-		chromedp.WindowSize(1280, 900),
-	}
-	if d.profileDir != "" {
-		opts = append(opts, chromedp.UserDataDir(d.profileDir))
-	}
-	if d.chromePath != "" {
-		opts = append(opts, chromedp.ExecPath(d.chromePath))
-	}
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	browser, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(string, ...any) {}))
-	if err := chromedp.Run(browser); err != nil {
-		allocCancel()
-		browserCancel()
-		return fmt.Errorf("dns: запуск chrome: %w", err)
-	}
-
-	d.allocCancel = allocCancel
-	d.browser = browser
-	d.browserCancel = browserCancel
-	d.log.Info("dns: chrome запущен", "headless", d.headless, "profile", d.profileDir)
-	return nil
-}
-
-func hideWebdriver() chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(
-			`Object.defineProperty(navigator, 'webdriver', {get: () => undefined});`,
-		).Do(ctx)
-		return err
-	})
-}
-
 func setCityCookie(city string) chromedp.Action {
 	if city == "" {
 		city = "moscow"
@@ -217,37 +137,39 @@ func setCityCookie(city string) chromedp.Action {
 	})
 }
 
-func waitForPrice(ctx context.Context) (Snapshot, error) {
+func waitForExtract(ctx context.Context, js string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
 	deadline := time.Now().Add(pageWait)
 	var last pageBits
+	var lastErr error = ErrNoPrice
 	for {
-		if err := chromedp.Run(ctx, chromedp.Evaluate(extractJS, &last)); err != nil {
+		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &last)); err != nil {
 			return Snapshot{}, err
 		}
 		if hardBlocked(last) {
 			return Snapshot{}, ErrChallenge
 		}
-		snap, err := parseBits(last)
+		snap, err := parse(last)
 		if err == nil {
 			return snap, nil
 		}
+		lastErr = err
 
 		select {
 		case <-ctx.Done():
-			if last.QRATOR {
+			if last.QRATOR || last.Challenge {
 				return Snapshot{}, ErrChallenge
 			}
 			return Snapshot{}, ctx.Err()
 		case <-time.After(pollEvery):
 		}
 		if time.Now().After(deadline) {
-			if last.QRATOR {
+			if last.QRATOR || last.Challenge {
 				return Snapshot{}, ErrChallenge
 			}
 			if last.Title != "" {
-				return Snapshot{}, fmt.Errorf("%w (%s)", err, last.Title)
+				return Snapshot{}, fmt.Errorf("%w (%s)", lastErr, last.Title)
 			}
-			return Snapshot{}, err
+			return Snapshot{}, lastErr
 		}
 	}
 }

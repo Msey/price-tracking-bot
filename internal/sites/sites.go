@@ -58,12 +58,21 @@ func (s Site) Title() string {
 
 // Supported сообщает, умеем ли мы уже отслеживать цены в этом магазине.
 func (s Site) Supported() bool {
-	return s == DNS
+	return s == DNS || s == YandexMarket
 }
 
 // dnsProductPath вытаскивает идентификатор товара из пути вида
 // /product/9ee3a4f41358d9cb/146-noutbuk-honor-magicbook-pro-14/
 var dnsProductPath = regexp.MustCompile(`(?i)^/product/([0-9a-f]{8,32})(?:/|$)`)
+
+// Карточки Маркета: /card/slug/4638722913, /card/4638722913,
+// /product--slug/4638722913 и старый /product/4638722913.
+var (
+	yandexCardPath        = regexp.MustCompile(`(?i)^/card/(?:[^/]+/)?(\d{6,})(?:/|$)`)
+	yandexProductDashPath = regexp.MustCompile(`(?i)^/product--[^/]+/(\d{6,})(?:/|$)`)
+	yandexProductPath     = regexp.MustCompile(`(?i)^/product/(\d{6,})(?:/|$)`)
+	yandexSafeSlug        = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,200}$`)
+)
 
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
 // Telegram часто присылает её вместе с подписью.
@@ -94,6 +103,17 @@ func Parse(raw string) (Ref, error) {
 		return Ref{}, fmt.Errorf("%w: %s", ErrNotSupported, site.Title())
 	}
 
+	switch site {
+	case DNS:
+		return parseDNS(u)
+	case YandexMarket:
+		return parseYandexMarket(u)
+	default:
+		return Ref{}, fmt.Errorf("%w: %s", ErrNotSupported, site.Title())
+	}
+}
+
+func parseDNS(u *url.URL) (Ref, error) {
 	m := dnsProductPath.FindStringSubmatch(u.EscapedPath())
 	if m == nil {
 		return Ref{}, ErrNotAProduct
@@ -106,6 +126,46 @@ func Parse(raw string) (Ref, error) {
 	return Ref{Site: DNS, ExternalKey: key, URL: canonical}, nil
 }
 
+func parseYandexMarket(u *url.URL) (Ref, error) {
+	key, slug := yandexKeyAndSlug(u.EscapedPath())
+	if key == "" {
+		return Ref{}, ErrNotAProduct
+	}
+	// Канон только из id и безопасного slug: query/фрагмент отбрасываем,
+	// произвольный путь в href не попадает.
+	canonical := "https://market.yandex.ru/card/" + key
+	if slug != "" && yandexSafeSlug.MatchString(slug) {
+		canonical = "https://market.yandex.ru/card/" + strings.ToLower(slug) + "/" + key
+	}
+	return Ref{Site: YandexMarket, ExternalKey: key, URL: canonical}, nil
+}
+
+func yandexKeyAndSlug(path string) (key, slug string) {
+	if m := yandexCardPath.FindStringSubmatch(path); m != nil {
+		key = m[1]
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 3 && strings.EqualFold(parts[0], "card") && parts[2] == key {
+			slug = parts[1]
+		}
+		return key, slug
+	}
+	if m := yandexProductDashPath.FindStringSubmatch(path); m != nil {
+		key = m[1]
+		const prefix = "/product--"
+		if len(path) >= len(prefix) && strings.EqualFold(path[:len(prefix)], prefix) {
+			after := path[len(prefix):]
+			if slash := strings.IndexByte(after, '/'); slash > 0 {
+				slug = after[:slash]
+			}
+		}
+		return key, slug
+	}
+	if m := yandexProductPath.FindStringSubmatch(path); m != nil {
+		return m[1], ""
+	}
+	return "", ""
+}
+
 func siteByHost(host string) (Site, bool) {
 	switch host {
 	case "dns-shop.ru", "www.dns-shop.ru":
@@ -114,7 +174,7 @@ func siteByHost(host string) (Site, bool) {
 		return Wildberries, true
 	case "ozon.ru", "www.ozon.ru":
 		return Ozon, true
-	case "market.yandex.ru", "www.market.yandex.ru", "market.yandex.by":
+	case "market.yandex.ru", "www.market.yandex.ru", "m.market.yandex.ru", "market.yandex.by":
 		return YandexMarket, true
 	default:
 		return "", false

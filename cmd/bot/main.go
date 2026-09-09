@@ -13,6 +13,7 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/config"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/gui"
+	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/telegram"
 	"github.com/Msey/price-tracking-bot/internal/tracker"
@@ -53,16 +54,29 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	browser := fetch.NewBrowser(fetch.BrowserOptions{
+		ProfileDir: cfg.ChromeProfile,
+		ChromePath: cfg.ChromePath,
+		Headless:   cfg.ChromeHeadless,
+		Log:        log,
+	})
+	defer browser.Close()
+
 	dns := fetch.NewDNS(fetch.DNSOptions{
-		ProfileDir:      cfg.ChromeProfile,
-		ChromePath:      cfg.ChromePath,
-		Headless:        cfg.ChromeHeadless,
+		Browser:         browser,
 		CircuitCooldown: cfg.CircuitCooldown,
 		Log:             log,
 	})
-	defer dns.Close()
+	market := fetch.NewMarket(fetch.MarketOptions{
+		Browser:         browser,
+		CircuitCooldown: cfg.CircuitCooldown,
+		Log:             log,
+	})
 
-	tr := tracker.New(store, dns, bot, tracker.Config{
+	tr := tracker.New(store, map[string]tracker.Fetcher{
+		string(sites.DNS):          dns,
+		string(sites.YandexMarket): market,
+	}, bot, tracker.Config{
 		Interval:     cfg.CheckInterval,
 		FetchGap:     cfg.FetchGap,
 		PerCycle:     cfg.FetchPerCycle,
@@ -89,7 +103,12 @@ func run(log *slog.Logger) error {
 
 	if cfg.GUI && gui.Available() {
 		go bot.Start(ctx)
-		err := gui.Run(ctx, gui.Options{Store: store, DataPath: cfg.DatabasePath, Log: log})
+		err := gui.Run(ctx, gui.Options{
+			Store:       store,
+			DataPath:    cfg.DatabasePath,
+			Log:         log,
+			StartHidden: startHiddenFromArgs(os.Args[1:]),
+		})
 		stop()
 		log.Info("бот остановлен")
 		return err
@@ -98,4 +117,13 @@ func run(log *slog.Logger) error {
 	bot.Start(ctx)
 	log.Info("бот остановлен")
 	return nil
+}
+
+func startHiddenFromArgs(args []string) bool {
+	for _, a := range args {
+		if a == "-tray" || a == "--tray" {
+			return true
+		}
+	}
+	return false
 }

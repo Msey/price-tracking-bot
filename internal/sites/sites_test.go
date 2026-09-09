@@ -106,6 +106,108 @@ func TestParseIsStable(t *testing.T) {
 	}
 }
 
+func TestParseYandexMarket(t *testing.T) {
+	const (
+		productURL = "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913"
+		canonical  = "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913"
+		key        = "4638722913"
+	)
+
+	tests := []struct {
+		name string
+		in   string
+		url  string
+	}{
+		{"карточка с slug", productURL, canonical},
+		{"utm отбрасываются", productURL + "?utm_source=telegram&sku=1", canonical},
+		{"фрагмент отбрасывается", productURL + "#reviews", canonical},
+		{"www", "https://www.market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913", canonical},
+		{"мобильный хост", "https://m.market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913", canonical},
+		{"без slug", "https://market.yandex.ru/card/4638722913", "https://market.yandex.ru/card/4638722913"},
+		{"старый product--", "https://market.yandex.ru/product--begovaya-dorozhka-sportflag-glow-run-a/4638722913", canonical},
+		{"старый /product/id", "https://market.yandex.ru/product/4638722913", "https://market.yandex.ru/card/4638722913"},
+		{"внутри текста", "смотри " + productURL + " цена?", canonical},
+		{"заглавные в slug", "https://market.yandex.ru/card/Begovaya-Dorozhka-Sportflag-Glow-Run-A/4638722913", canonical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, err := Parse(tt.in)
+			if err != nil {
+				t.Fatalf("Parse(%q) вернул ошибку: %v", tt.in, err)
+			}
+			if ref.Site != YandexMarket {
+				t.Errorf("Site = %q, ожидался %q", ref.Site, YandexMarket)
+			}
+			if ref.ExternalKey != key {
+				t.Errorf("ExternalKey = %q, ожидался %q", ref.ExternalKey, key)
+			}
+			if ref.URL != tt.url {
+				t.Errorf("URL = %q, ожидался %q", ref.URL, tt.url)
+			}
+		})
+	}
+}
+
+func TestParseYandexIsStable(t *testing.T) {
+	variants := []string{
+		"https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913",
+		"https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913?utm_medium=cpc",
+		"https://www.market.yandex.ru/product--begovaya-dorozhka-sportflag-glow-run-a/4638722913",
+	}
+
+	first, err := Parse(variants[0])
+	if err != nil {
+		t.Fatalf("Parse вернул ошибку: %v", err)
+	}
+	for _, v := range variants[1:] {
+		ref, err := Parse(v)
+		if err != nil {
+			t.Fatalf("Parse(%q) вернул ошибку: %v", v, err)
+		}
+		if ref.ExternalKey != first.ExternalKey || ref.URL != first.URL {
+			t.Errorf("Parse(%q) = %+v, ожидалось %+v", v, ref, first)
+		}
+	}
+}
+
+func TestParseYandexRejectsHostTricks(t *testing.T) {
+	const path = "/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913"
+	tests := []struct {
+		name string
+		in   string
+		want error
+	}{
+		{"чужой поддомен", "https://evil.market.yandex.ru" + path, ErrUnknownSite},
+		{"хост с суффиксом", "https://notmarket.yandex.ru" + path, ErrUnknownSite},
+		{"userinfo", "https://evil@market.yandex.ru" + path, ErrNotALink},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.in)
+			if !errors.Is(err, tt.want) {
+				t.Errorf("Parse(%q) вернул %v, ожидалась %v", tt.in, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseYandexCanonicalHasNoUserPayload(t *testing.T) {
+	ref, err := Parse(`https://market.yandex.ru/card/foo!onclick=alert/4638722913`)
+	if err != nil {
+		t.Fatalf("Parse вернул ошибку: %v", err)
+	}
+	if strings.ContainsAny(ref.URL, `"<>!`) {
+		t.Errorf("канонический URL содержит лишние символы: %q", ref.URL)
+	}
+	if ref.ExternalKey != "4638722913" {
+		t.Errorf("ExternalKey = %q", ref.ExternalKey)
+	}
+	if ref.URL != "https://market.yandex.ru/card/4638722913" {
+		t.Errorf("небезопасный slug не должен попасть в канон: %q", ref.URL)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -118,7 +220,8 @@ func TestParseErrors(t *testing.T) {
 		{"неизвестный магазин", "https://example.com/product/123/", ErrUnknownSite},
 		{"wildberries пока не умеем", "https://www.wildberries.ru/catalog/12345/detail.aspx", ErrNotSupported},
 		{"ozon пока не умеем", "https://www.ozon.ru/product/noutbuk-123456/", ErrNotSupported},
-		{"яндекс маркет пока не умеем", "https://market.yandex.ru/product--noutbuk/123", ErrNotSupported},
+		{"короткий id маркета", "https://market.yandex.ru/product--noutbuk/123", ErrNotAProduct},
+		{"главная маркета", "https://market.yandex.ru/", ErrNotAProduct},
 		{"главная страница dns", "https://www.dns-shop.ru/", ErrNotAProduct},
 		{"категория, а не товар", "https://www.dns-shop.ru/catalog/17a892f816404e77/noutbuki/", ErrNotAProduct},
 		{"короткий id", "https://www.dns-shop.ru/product/abc/", ErrNotAProduct},

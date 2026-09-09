@@ -1,4 +1,4 @@
-// Package fetch достаёт цену со страницы DNS.
+// Package fetch достаёт цену со страницы магазина.
 package fetch
 
 import (
@@ -14,10 +14,10 @@ import (
 )
 
 var (
-	// ErrChallenge — QRATOR не пустил, дальше по этому IP лучше не стучаться.
-	ErrChallenge = errors.New("dns: qrator-челлендж")
+	// ErrChallenge — сайт показал защиту (QRATOR, капча). Дальше лучше подождать.
+	ErrChallenge = errors.New("сайт показал защиту от ботов")
 	// ErrNoPrice — страница открылась, но цены на ней нет.
-	ErrNoPrice = errors.New("dns: цена не найдена")
+	ErrNoPrice = errors.New("цена не найдена")
 )
 
 // Snapshot — то, что удалось прочитать с карточки.
@@ -29,16 +29,22 @@ type Snapshot struct {
 }
 
 type pageBits struct {
-	QRATOR   bool     `json:"qrator"`
-	LDJSON   []string `json:"ldjson"`
-	CSSPrice string   `json:"cssPrice"`
-	Title    string   `json:"title"`
+	QRATOR    bool     `json:"qrator"`
+	Challenge bool     `json:"challenge"`
+	LDJSON    []string `json:"ldjson"`
+	CSSPrice  string   `json:"cssPrice"`
+	Name      string   `json:"name"`
+	Title     string   `json:"title"`
 }
 
 var (
-	ldJSONRe = regexp.MustCompile(`(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
-	divRe    = regexp.MustCompile(`(?is)<div\s+([^>]+)>([^<]*)</div>`)
-	classRe  = regexp.MustCompile(`(?i)class=["']([^"']+)["']`)
+	ldJSONRe            = regexp.MustCompile(`(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
+	divRe               = regexp.MustCompile(`(?is)<div\s+([^>]+)>([^<]*)</div>`)
+	classRe             = regexp.MustCompile(`(?i)class=["']([^"']+)["']`)
+	marketPriceInnerRe  = regexp.MustCompile(`(?is)data-auto=["']snippet-price-current["'][^>]*>\s*<span[^>]*>\s*([^<]+?)\s*<`)
+	h1Re                = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
+	tagRe               = regexp.MustCompile(`(?s)<[^>]+>`)
+	marketTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс"}
 )
 
 // ParseHTML разбирает HTML карточки. Сети нет.
@@ -51,8 +57,12 @@ func ParseHTML(html string) (Snapshot, error) {
 	})
 }
 
+func botWall(p pageBits) bool {
+	return p.QRATOR || p.Challenge
+}
+
 func parseBits(p pageBits) (Snapshot, error) {
-	if p.QRATOR && strings.TrimSpace(p.CSSPrice) == "" && len(p.LDJSON) == 0 {
+	if botWall(p) && strings.TrimSpace(p.CSSPrice) == "" && len(p.LDJSON) == 0 {
 		return Snapshot{}, ErrChallenge
 	}
 
@@ -66,7 +76,7 @@ func parseBits(p pageBits) (Snapshot, error) {
 		}
 	}
 	if !ok {
-		if p.QRATOR {
+		if botWall(p) {
 			return Snapshot{}, ErrChallenge
 		}
 		return Snapshot{}, ErrNoPrice
@@ -85,7 +95,8 @@ func isChallenge(html string) bool {
 
 func hardBlocked(p pageBits) bool {
 	t := strings.ToLower(strings.TrimSpace(p.Title))
-	return strings.Contains(t, "403") || strings.Contains(t, "401")
+	return strings.Contains(t, "403") || strings.Contains(t, "401") ||
+		strings.Contains(t, "not a robot")
 }
 
 func extractLDJSON(html string) []string {
@@ -262,4 +273,85 @@ func defaultCurrency(c string) string {
 		return "RUB"
 	}
 	return strings.ToUpper(c)
+}
+
+// ParseMarketHTML разбирает HTML карточки Яндекс.Маркета. Сети нет.
+func ParseMarketHTML(html string) (Snapshot, error) {
+	return parseMarketBits(pageBits{
+		Challenge: isMarketChallenge(html),
+		LDJSON:    extractLDJSON(html),
+		CSSPrice:  extractMarketPriceText(html),
+		Name:      extractH1(html),
+	})
+}
+
+func parseMarketBits(p pageBits) (Snapshot, error) {
+	if hardBlocked(p) {
+		return Snapshot{}, ErrChallenge
+	}
+
+	name := cleanMarketName(p.Name, p.Title)
+	if kopecks, ok := parseDisplayedPrice(p.CSSPrice); ok {
+		avail := true
+		if snap, ldOK := parseLDJSON(p.LDJSON); ldOK {
+			if name == "" {
+				name = snap.Name
+			}
+			avail = snap.Available
+		}
+		return Snapshot{
+			Name:         name,
+			PriceKopecks: kopecks,
+			Currency:     "RUB",
+			Available:    avail,
+		}, nil
+	}
+
+	if snap, ok := parseLDJSON(p.LDJSON); ok {
+		if name != "" {
+			snap.Name = name
+		}
+		return snap, nil
+	}
+	if botWall(p) {
+		return Snapshot{}, ErrChallenge
+	}
+	return Snapshot{}, ErrNoPrice
+}
+
+func isMarketChallenge(html string) bool {
+	h := strings.ToLower(html)
+	return strings.Contains(h, "smartcaptcha") ||
+		strings.Contains(h, "showcaptcha") ||
+		strings.Contains(h, "checkboxcaptcha") ||
+		strings.Contains(h, "are you not a robot") ||
+		strings.Contains(h, "confirm that you are not a robot")
+}
+
+func extractMarketPriceText(html string) string {
+	if m := marketPriceInnerRe.FindStringSubmatch(html); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func extractH1(html string) string {
+	m := h1Re.FindStringSubmatch(html)
+	if m == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(tagRe.ReplaceAllString(m[1], " ")), " ")
+}
+
+func cleanMarketName(h1, title string) string {
+	name := strings.TrimSpace(h1)
+	if name == "" {
+		name = strings.TrimSpace(title)
+	}
+	for _, sep := range marketTitleCutovers {
+		if i := strings.Index(name, sep); i > 0 {
+			name = strings.TrimSpace(name[:i])
+		}
+	}
+	return name
 }
