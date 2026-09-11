@@ -102,8 +102,13 @@ type app struct {
 	// щелчок по пункту в трее добавлял бы ещё один опрос базы каждые 750 мс.
 	watching atomic.Bool
 	// loading — чтение базы уже идёт, второе в очередь не ставим.
-	loading  atomic.Bool
-	checkCtx context.Context
+	loading    atomic.Bool
+	checkCtx   context.Context
+	userID     int64
+	userLocked bool
+	userBox    *walk.ComboBox
+	users      []int64
+	userSync   atomic.Bool
 }
 
 func Run(ctx context.Context, opt Options) error {
@@ -214,6 +219,8 @@ func Run(ctx context.Context, opt Options) error {
 		checkStatus:   opt.CheckStatus,
 		logEnabled:    opt.LogEnabled,
 		setLogEnabled: opt.SetLogEnabled,
+		userID:        opt.UserID,
+		userLocked:    opt.UserLocked && opt.UserID > 0,
 		board: &board{
 			titleFont: titleFont,
 			metaFont:  metaFont,
@@ -292,6 +299,13 @@ func Run(ctx context.Context, opt Options) error {
 						},
 					},
 					ui.HSpacer{},
+					ui.ComboBox{
+						AssignTo:              &a.userBox,
+						MinSize:               ui.Size{Width: 160, Height: 32},
+						MaxSize:               ui.Size{Width: 200, Height: 32},
+						Model:                 []string{},
+						OnCurrentIndexChanged: a.userPicked,
+					},
 					ui.PushButton{AssignTo: &a.checkBtn, Text: "Проверить цены", MinSize: ui.Size{Width: 150, Height: 32}, OnClicked: a.requestCheck},
 					ui.PushButton{AssignTo: &a.logBtn, Text: "Логи: выкл", MinSize: ui.Size{Width: 120, Height: 32}, OnClicked: a.toggleDiagLog},
 					ui.PushButton{Text: "Обновить", MinSize: ui.Size{Width: 110, Height: 32}, OnClicked: a.refreshClicked},
@@ -312,6 +326,9 @@ func Run(ctx context.Context, opt Options) error {
 	a.board.attach(canvas)
 	keep(disposeFunc(func() { a.board.disposeTip() }))
 	a.updateCheckUI()
+	if a.userBox != nil && a.userLocked {
+		a.userBox.SetVisible(false)
+	}
 	if a.setLogEnabled == nil && a.logBtn != nil {
 		a.logBtn.SetVisible(false)
 	}
@@ -401,22 +418,22 @@ type disposeFunc func()
 func (f disposeFunc) Dispose() { f() }
 
 func (a *app) deleteItem(it Item) {
-	a.log.Info("удаление товара из окна", "product_id", it.ProductID, "title", it.Title)
-	msg := fmt.Sprintf("Снять «%s» с отслеживания?", it.Title)
-	if it.Watchers > 1 {
-		msg = fmt.Sprintf("«%s» отслеживают %d %s. Снять у всех?",
-			it.Title, it.Watchers, view.RuPlural(it.Watchers, "человек", "человека", "человек"))
+	userID := it.UserID
+	if userID <= 0 {
+		userID = a.userID
 	}
+	a.log.Info("удаление товара из окна", "product_id", it.ProductID, "user_id", userID, "title", it.Title)
+	msg := fmt.Sprintf("Снять «%s» с отслеживания?", it.Title)
 	if a.mw != nil && walk.MsgBox(a.mw, "Трекинг цен", msg, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
 		return
 	}
-	if a.store == nil {
+	if a.store == nil || userID <= 0 {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		n, err := a.store.DeleteProductSubscriptions(ctx, it.ProductID)
+		removed, err := a.store.DeleteSubscription(ctx, userID, it.ProductID)
 		a.onUI(func() {
 			if err != nil {
 				a.log.Error("удаление товара", "error", err)
@@ -425,10 +442,45 @@ func (a *app) deleteItem(it Item) {
 				}
 				return
 			}
-			a.log.Info("товар снят с отслеживания", "product_id", it.ProductID, "removed", n)
+			a.log.Info("товар снят с отслеживания", "product_id", it.ProductID, "user_id", userID, "removed", removed)
 			a.refresh(false)
 		})
 	}()
+}
+
+func (a *app) userPicked() {
+	if a.userLocked || a.userSync.Load() || a.userBox == nil {
+		return
+	}
+	i := a.userBox.CurrentIndex()
+	if i < 0 || i >= len(a.users) || a.userID == a.users[i] {
+		return
+	}
+	a.userID = a.users[i]
+	a.log.Info("в окне выбран пользователь", "user_id", a.userID)
+	a.refresh(false)
+}
+
+func (a *app) syncUserBox(ids []int64, selected int64) {
+	if a.userBox == nil || a.userLocked {
+		return
+	}
+	a.userSync.Store(true)
+	defer a.userSync.Store(false)
+	a.users = append([]int64(nil), ids...)
+	labels := make([]string, len(ids))
+	idx := 0
+	for i, id := range ids {
+		labels[i] = fmt.Sprintf("%d", id)
+		if id == selected {
+			idx = i
+		}
+	}
+	_ = a.userBox.SetModel(labels)
+	if len(ids) > 0 {
+		_ = a.userBox.SetCurrentIndex(idx)
+	}
+	a.userBox.SetVisible(len(ids) > 1)
 }
 
 func (a *app) requestCheck() {
@@ -649,8 +701,23 @@ func (a *app) refresh(notify bool) {
 		defer a.loading.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		items, err := loadItems(ctx, a.store)
-		a.onUI(func() { a.apply(items, err, notify) })
+		userID := a.userID
+		var ids []int64
+		if !a.userLocked {
+			var err error
+			ids, err = a.store.ListSubscriberIDs(ctx)
+			if err != nil {
+				a.onUI(func() { a.apply(nil, err, notify) })
+				return
+			}
+			userID = pickUserID(userID, ids)
+		}
+		items, err := loadItems(ctx, a.store, userID)
+		a.onUI(func() {
+			a.userID = userID
+			a.syncUserBox(ids, userID)
+			a.apply(items, err, notify)
+		})
 	}()
 }
 

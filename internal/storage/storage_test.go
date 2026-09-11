@@ -656,6 +656,43 @@ func TestListAllRequests(t *testing.T) {
 	}
 }
 
+func TestListUserRequestsHidesOthers(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "ozon", ozonKey, ozonURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	alice, err := s.ListUserRequests(ctx, chatAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alice) != 1 || alice[0].ChatID != chatAlice || alice[0].Product.Site != "dns" {
+		t.Fatalf("Алиса: %+v", alice)
+	}
+	bob, err := s.ListUserRequests(ctx, chatBob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bob) != 1 || bob[0].Product.Site != "ozon" {
+		t.Fatalf("Боб: %+v", bob)
+	}
+	if got, err := s.ListUserRequests(ctx, 0); err != nil || len(got) != 0 {
+		t.Fatalf("без user id: n=%d err=%v", len(got), err)
+	}
+
+	ids, err := s.ListSubscriberIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != chatAlice || ids[1] != chatBob {
+		t.Fatalf("подписчики %v", ids)
+	}
+}
+
 func TestHistoriesOldestFirst(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

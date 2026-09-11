@@ -1,12 +1,66 @@
 package gui
 
 import (
+	"context"
 	"database/sql"
 	"image"
+	"path/filepath"
 	"testing"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
+
+func TestLoadItemsOnlyOwnLinks(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "gui.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+	if _, _, err := store.AddSubscription(ctx, 1001, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddSubscription(ctx, 1002, "ozon", "2190214590", "https://www.ozon.ru/product/2190214590", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	alice, err := loadItems(ctx, store, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alice) != 1 || alice[0].UserID != 1001 || alice[0].SiteKey != "dns" {
+		t.Fatalf("Алиса: %+v", alice)
+	}
+	bob, err := loadItems(ctx, store, 1002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bob) != 1 || bob[0].SiteKey != "ozon" {
+		t.Fatalf("Боб: %+v", bob)
+	}
+	none, err := loadItems(ctx, store, 0)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("без user id: n=%d err=%v", len(none), err)
+	}
+}
+
+func TestPickUserID(t *testing.T) {
+	if pickUserID(0, nil) != 0 {
+		t.Fatal("пустая база")
+	}
+	if pickUserID(0, []int64{7}) != 7 {
+		t.Fatal("единственный подписчик")
+	}
+	if pickUserID(0, []int64{3, 9}) != 3 {
+		t.Fatal("без выбора — первый")
+	}
+	if pickUserID(9, []int64{3, 9}) != 9 {
+		t.Fatal("сохранённый выбор")
+	}
+	if pickUserID(5, []int64{3, 9}) != 5 {
+		t.Fatal("заданный id остаётся, даже если ссылок нет")
+	}
+}
 
 func TestGroupRequestsDedupsProduct(t *testing.T) {
 	p := storage.Product{ID: 7, Site: "dns", Name: "Honor", URL: "https://www.dns-shop.ru/product/aa/", City: "moscow"}

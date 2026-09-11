@@ -14,6 +14,7 @@ const historyPoints = 90
 // Item — одна строка списка: ссылка на товар и её график цены.
 type Item struct {
 	ProductID int64
+	UserID    int64
 	Title     string
 	URL       string
 	SiteKey   string
@@ -50,6 +51,7 @@ func sameItems(a, b []Item) bool {
 
 func (it Item) same(other Item) bool {
 	if it.ProductID != other.ProductID ||
+		it.UserID != other.UserID ||
 		it.Title != other.Title ||
 		it.Price != other.Price ||
 		it.Status != other.Status ||
@@ -66,8 +68,11 @@ func (it Item) same(other Item) bool {
 	return true
 }
 
-func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
-	reqs, err := store.ListAllRequests(ctx)
+func loadItems(ctx context.Context, store *storage.Store, userID int64) ([]Item, error) {
+	if userID <= 0 {
+		return nil, nil
+	}
+	reqs, err := store.ListUserRequests(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +132,7 @@ func itemFromRequest(req storage.Request) Item {
 	}
 	return Item{
 		ProductID: req.Product.ID,
+		UserID:    req.ChatID,
 		Title:     req.Product.Title(),
 		URL:       req.Product.URL,
 		SiteKey:   req.Product.Site,
@@ -166,4 +172,21 @@ func priceChanges(prev, next []Item) []string {
 		out = append(out, it.Title+": "+was.Price+" → "+it.Price)
 	}
 	return out
+}
+
+// pickUserID выбирает, чей список показать в окне. preferred — GUI_USER
+// или уже выбранный в комбобоксе id; ids — у кого сейчас есть ссылки.
+func pickUserID(preferred int64, ids []int64) int64 {
+	if preferred > 0 {
+		for _, id := range ids {
+			if id == preferred {
+				return preferred
+			}
+		}
+		return preferred
+	}
+	if len(ids) == 0 {
+		return 0
+	}
+	return ids[0]
 }

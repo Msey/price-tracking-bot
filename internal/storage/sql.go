@@ -67,6 +67,34 @@ const (
 		WHERE s.active = 1
 		ORDER BY s.id DESC`
 
+	sqlListUserRequests = `
+		SELECT s.id, s.created_at, u.tg_chat_id,
+		       p.id, p.site, p.external_key, p.url, p.name, p.city,
+		       last.price_kopecks, last.available, last.checked_at,
+		       err.kind, err.occurred_at
+		FROM subscriptions s
+		JOIN users u ON u.id = s.user_id
+		JOIN products p ON p.id = s.product_id
+		LEFT JOIN (
+		    SELECT product_id, price_kopecks, available, checked_at,
+		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
+		    FROM price_history
+		) last ON last.product_id = p.id AND last.rn = 1
+		LEFT JOIN (
+		    SELECT product_id, kind, occurred_at,
+		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY occurred_at DESC, id DESC) AS rn
+		    FROM fetch_errors
+		) err ON err.product_id = p.id AND err.rn = 1
+		WHERE s.active = 1 AND u.tg_chat_id = ?
+		ORDER BY s.id`
+
+	sqlListSubscriberIDs = `
+		SELECT u.tg_chat_id
+		FROM users u
+		JOIN subscriptions s ON s.user_id = u.id AND s.active = 1
+		GROUP BY u.tg_chat_id
+		ORDER BY u.tg_chat_id`
+
 	sqlDeleteSubscription = `
 		DELETE FROM subscriptions
 		WHERE product_id = ?

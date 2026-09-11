@@ -246,6 +246,56 @@ func (s *Store) ListAllRequests(ctx context.Context) ([]Request, error) {
 	return out, nil
 }
 
+// ListUserRequests — активные заявки одного пользователя, в том же порядке, что /list.
+func (s *Store) ListUserRequests(ctx context.Context, chatID int64) ([]Request, error) {
+	if chatID <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, sqlListUserRequests, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: заявки пользователя %d: %w", chatID, err)
+	}
+	defer rows.Close()
+
+	var out []Request
+	for rows.Next() {
+		var r Request
+		if err := rows.Scan(
+			&r.SubscriptionID, &r.CreatedAt, &r.ChatID,
+			&r.Product.ID, &r.Product.Site, &r.Product.ExternalKey,
+			&r.Product.URL, &r.Product.Name, &r.Product.City,
+			&r.LastPriceKopecks, &r.LastAvailable, &r.LastCheckedAt,
+			&r.LastErrorKind, &r.LastErrorAt,
+		); err != nil {
+			return nil, fmt.Errorf("storage: чтение заявки пользователя: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: обход заявок пользователя: %w", err)
+	}
+	return out, nil
+}
+
+// ListSubscriberIDs — Telegram id тех, у кого есть хотя бы одна активная ссылка.
+func (s *Store) ListSubscriberIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, sqlListSubscriberIDs)
+	if err != nil {
+		return nil, fmt.Errorf("storage: список пользователей: %w", err)
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("storage: чтение пользователя: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // DeleteSubscription убирает подписку только у этого пользователя.
 // Чужую ссылку снять нельзя: чужой user_id в условие не попадает.
 func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64) (bool, error) {

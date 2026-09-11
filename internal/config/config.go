@@ -35,6 +35,8 @@ type Config struct {
 	DefaultCity     string
 	// AllowedUsers пуст, если доступ открыт всем.
 	AllowedUsers map[int64]bool
+	// GUIUser — чей список показывать в окне. 0 — выбрать автоматически.
+	GUIUser int64
 	// UIAddr — адрес локальной страницы со всеми заявками.
 	// Пусто или "off" — не поднимать HTTP.
 	UIAddr string
@@ -101,6 +103,13 @@ func Load() (Config, error) {
 		cfg.UIAddr = ""
 	}
 	cfg.GUI = parseOnOff(envOr("GUI", "1"))
+	if raw := strings.TrimSpace(os.Getenv("GUI_USER")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id < 1 {
+			return Config{}, fmt.Errorf("config: GUI_USER %q: нужен положительный Telegram user id", raw)
+		}
+		cfg.GUIUser = id
+	}
 
 	if !cityShape.MatchString(cfg.DefaultCity) {
 		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)
@@ -127,6 +136,21 @@ func (c Config) Allowed(userID int64) bool {
 		return true
 	}
 	return c.AllowedUsers[userID]
+}
+
+// GUIUserID — пользователь для окна. Сначала GUI_USER, иначе единственный
+// из ALLOWED_USERS. Ноль значит: окно само выберет по базе.
+func (c Config) GUIUserID() int64 {
+	if c.GUIUser > 0 {
+		return c.GUIUser
+	}
+	if len(c.AllowedUsers) != 1 {
+		return 0
+	}
+	for id := range c.AllowedUsers {
+		return id
+	}
+	return 0
 }
 
 func loadDotEnv() {
