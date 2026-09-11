@@ -80,6 +80,32 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 	}
 }
 
+func TestMinCheckInterval(t *testing.T) {
+	if got := minCheckInterval(nil); got != time.Hour {
+		t.Fatalf("пусто: %s", got)
+	}
+	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}}); got != 24*time.Hour {
+		t.Fatalf("только dns: %s", got)
+	}
+	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}, "ozon": &fakeDNS{}}); got != time.Hour {
+		t.Fatalf("dns+ozon: %s", got)
+	}
+	tr := New(nil, map[string]Fetcher{
+		"dns":           &fakeDNS{},
+		"ozon":          &fakeDNS{},
+		"yandex_market": &fakeDNS{},
+	}, nil, Config{Interval: 20 * time.Minute}, nil)
+	if tr.cfg.Interval != time.Hour {
+		t.Fatalf("пауза автоцикла = %s, ожидался час из-за Ozon", tr.cfg.Interval)
+	}
+	if siteCheckInterval("dns") != 24*time.Hour || siteCheckInterval("yandex_market") != 24*time.Hour {
+		t.Fatal("dns и маркет должны быть раз в сутки")
+	}
+	if siteCheckInterval("ozon") != time.Hour {
+		t.Fatal("ozon должен быть раз в час")
+	}
+}
+
 func TestWaitInterruptedByRequestCheck(t *testing.T) {
 	tr := New(nil, nil, nil, Config{
 		Interval:     20 * time.Minute,

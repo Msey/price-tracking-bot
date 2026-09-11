@@ -25,7 +25,7 @@ var (
 type Config struct {
 	BotToken        string
 	DatabasePath    string
-	CheckInterval   time.Duration
+	CheckInterval   time.Duration // устаревший общий интервал; расписание магазинов в sites.CheckInterval
 	FetchGap        time.Duration
 	FetchPerCycle   int
 	StartupDelay    time.Duration

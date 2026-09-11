@@ -15,6 +15,7 @@ import (
 
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/money"
+	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
 )
@@ -30,7 +31,7 @@ type Notifier interface {
 }
 
 type Config struct {
-	Interval     time.Duration
+	Interval     time.Duration // пауза между автоциклами; New ставит минимум по магазинам
 	FetchGap     time.Duration
 	PerCycle     int
 	StartupDelay time.Duration
@@ -54,9 +55,6 @@ type Tracker struct {
 }
 
 func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
-	if cfg.Interval < 10*time.Minute {
-		cfg.Interval = 10 * time.Minute
-	}
 	if cfg.FetchGap < 30*time.Second {
 		cfg.FetchGap = 30 * time.Second
 	}
@@ -72,6 +70,7 @@ func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg
 	if fetchers == nil {
 		fetchers = map[string]Fetcher{}
 	}
+	cfg.Interval = minCheckInterval(fetchers)
 	return &Tracker{
 		store:    store,
 		fetchers: fetchers,
@@ -174,7 +173,10 @@ func (t *Tracker) Busy() bool {
 func (t *Tracker) Run(ctx context.Context) {
 	defer close(t.done)
 	t.log.Info("трекер запущен",
-		"interval", t.cfg.Interval,
+		"cycle", t.cfg.Interval,
+		"dns", siteCheckInterval(string(sites.DNS)),
+		"ozon", siteCheckInterval(string(sites.Ozon)),
+		"yandex_market", siteCheckInterval(string(sites.YandexMarket)),
 		"gap", t.cfg.FetchGap,
 		"per_cycle", t.cfg.PerCycle,
 		"startup_delay", t.cfg.StartupDelay,
@@ -251,10 +253,10 @@ func (t *Tracker) siteNames() []string {
 	return out
 }
 
-// cycle — обычный заход: берутся только товары, которым пора.
+// cycle — обычный заход: берутся только товары, которым пора по интервалу магазина.
 func (t *Tracker) cycle(ctx context.Context) {
 	t.cycleWith(ctx, false, func(ctx context.Context, site string) ([]storage.Product, error) {
-		return t.store.ProductsDue(ctx, site, time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
+		return t.store.ProductsDue(ctx, site, time.Now().Add(-siteCheckInterval(site)), t.cfg.PerCycle)
 	})
 }
 
@@ -444,6 +446,28 @@ func sign(diff int64) string {
 		return "−"
 	}
 	return "+"
+}
+
+func siteCheckInterval(site string) time.Duration {
+	d := sites.Site(site).CheckInterval()
+	if d < 10*time.Minute {
+		return 10 * time.Minute
+	}
+	return d
+}
+
+func minCheckInterval(fetchers map[string]Fetcher) time.Duration {
+	min := time.Duration(0)
+	for site := range fetchers {
+		d := siteCheckInterval(site)
+		if min == 0 || d < min {
+			min = d
+		}
+	}
+	if min == 0 {
+		return time.Hour
+	}
+	return min
 }
 
 func abs64(n int64) int64 {

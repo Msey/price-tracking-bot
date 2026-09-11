@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseDNS(t *testing.T) {
@@ -348,5 +349,20 @@ func TestParseErrors(t *testing.T) {
 				t.Errorf("Parse(%q) вернул %v, ожидалась %v", tt.in, err, tt.want)
 			}
 		})
+	}
+}
+
+func TestCheckInterval(t *testing.T) {
+	if got := Ozon.CheckInterval(); got != time.Hour {
+		t.Errorf("ozon = %s, ожидался час", got)
+	}
+	if got := DNS.CheckInterval(); got != 24*time.Hour {
+		t.Errorf("dns = %s, ожидались сутки", got)
+	}
+	if got := YandexMarket.CheckInterval(); got != 24*time.Hour {
+		t.Errorf("yandex = %s, ожидались сутки", got)
+	}
+	if got := Wildberries.CheckInterval(); got != 24*time.Hour {
+		t.Errorf("wildberries = %s, ожидались сутки", got)
 	}
 }

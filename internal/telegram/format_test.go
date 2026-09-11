@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
@@ -34,5 +35,17 @@ func TestExplainParseErrorEscapes(t *testing.T) {
 	got := explainParseError(err)
 	if strings.Contains(got, "<b>") {
 		t.Errorf("HTML не экранирован: %s", got)
+	}
+}
+
+func TestHumanDuration(t *testing.T) {
+	if got := humanDuration(time.Hour); got != "час" {
+		t.Errorf("час: %q", got)
+	}
+	if got := humanDuration(24 * time.Hour); got != "сутки" {
+		t.Errorf("сутки: %q", got)
+	}
+	if got := humanDuration(20 * time.Minute); got != "20 мин" {
+		t.Errorf("минуты: %q", got)
 	}
 }

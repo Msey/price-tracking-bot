@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Site — идентификатор магазина, он же значение колонки products.site.
@@ -53,6 +54,17 @@ func (s Site) Title() string {
 		return "Яндекс.Маркет"
 	default:
 		return string(s)
+	}
+}
+
+// CheckInterval — как часто ходить за ценой. DNS и Маркет банят за частые
+// заходы, поэтому сутки; Ozon держит более частый ритм — раз в час.
+func (s Site) CheckInterval() time.Duration {
+	switch s {
+	case Ozon:
+		return time.Hour
+	default:
+		return 24 * time.Hour
 	}
 }
 

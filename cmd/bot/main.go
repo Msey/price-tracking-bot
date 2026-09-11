@@ -98,7 +98,6 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 		string(sites.YandexMarket): fetch.NewMarket(shopOpt),
 		string(sites.Ozon):         fetch.NewOzon(shopOpt),
 	}, bot, tracker.Config{
-		Interval:     cfg.CheckInterval,
 		FetchGap:     cfg.FetchGap,
 		PerCycle:     cfg.FetchPerCycle,
 		StartupDelay: cfg.StartupDelay,
@@ -121,7 +120,9 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	log.Info("бот запущен",
 		"username", bot.Username(),
 		"database", cfg.DatabasePath,
-		"interval", cfg.CheckInterval,
+		"check_dns", sites.DNS.CheckInterval(),
+		"check_ozon", sites.Ozon.CheckInterval(),
+		"check_yandex", sites.YandexMarket.CheckInterval(),
 		"fetch_gap", cfg.FetchGap,
 		"per_cycle", cfg.FetchPerCycle,
 		"city", cfg.DefaultCity,

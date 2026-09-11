@@ -38,7 +38,7 @@ const helpText = `Я слежу за ценами и пишу, когда они
 /help — эта справка
 
 <b>Магазины</b>
-Сейчас работают DNS, Яндекс.Маркет и Ozon. Проверяю не чаще чем раз в указанный интервал, между карточками пауза — иначе магазин банит.
+Сейчас работают DNS, Яндекс.Маркет и Ozon. DNS и Маркет проверяю раз в сутки, Ozon — раз в час; между карточками пауза, иначе магазин банит.
 
 Wildberries на очереди.`
 
@@ -192,7 +192,7 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 	return c.Send(fmt.Sprintf(
 		"Добавил в отслеживание.\n\n%s\nМагазин: %s\nГород: %s\n\n"+
 			"Проверяю раз в %s и напишу, когда цена изменится.",
-		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(b.cfg.DefaultCity), humanDuration(b.cfg.CheckInterval),
+		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(b.cfg.DefaultCity), humanDuration(ref.Site.CheckInterval()),
 	), telebot.NoPreview)
 }
 
@@ -346,10 +346,16 @@ func describePrice(t storage.Tracked) string {
 }
 
 func humanDuration(d time.Duration) string {
-	if d%time.Hour == 0 {
+	switch {
+	case d == 24*time.Hour:
+		return "сутки"
+	case d == time.Hour:
+		return "час"
+	case d%time.Hour == 0:
 		return fmt.Sprintf("%d ч", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d мин", int(d.Minutes()))
 	}
-	return fmt.Sprintf("%d мин", int(d.Minutes()))
 }
 
 func clipLog(s string, n int) string {
