@@ -75,10 +75,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	closeStore := sync.OnceFunc(func() { _ = store.Close() })
 	defer closeStore()
 
-	bot, err := telegram.New(cfg, store, log)
-	if err != nil {
-		return err
-	}
+	bot := telegram.New(cfg, store, log)
 
 	browser := fetch.NewBrowser(fetch.BrowserOptions{
 		ProfileDir: cfg.ChromeProfile,
@@ -139,7 +136,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 			BotUsername:   bot.Username(),
 			CheckNow:      tr.RequestCheck,
 			CheckBusy:     tr.Busy,
-			CheckStatus:   tr.StatusText,
+			CheckStatus:   func() string { return statusLine(bot, tr) },
 			LogEnabled:    logs.Enabled,
 			SetLogEnabled: logs.Set,
 		})
@@ -160,4 +157,11 @@ func startHiddenFromArgs(args []string) bool {
 		}
 	}
 	return false
+}
+
+func statusLine(bot *telegram.Bot, tr *tracker.Tracker) string {
+	if s := bot.StatusText(); s != "" {
+		return s
+	}
+	return tr.StatusText()
 }

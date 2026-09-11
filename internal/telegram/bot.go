@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	telebot "gopkg.in/telebot.v3"
@@ -26,6 +28,13 @@ const (
 	// listBudget — сколько байт списка отдаём под товары. У Telegram предел
 	// сообщения 4096 символов, остаток оставлен на заголовок и хвост.
 	listBudget = 3600
+	tgRetryMin = 5 * time.Second
+	tgRetryMax = 30 * time.Second
+)
+
+var (
+	errOffline  = errors.New("telegram: нет связи, уведомление отложено")
+	tokenInText = regexp.MustCompile(`bot\d+:[A-Za-z0-9_-]+`)
 )
 
 const helpText = `Я слежу за ценами и пишу, когда они меняются.
@@ -43,39 +52,65 @@ const helpText = `Я слежу за ценами и пишу, когда они
 Wildberries на очереди.`
 
 type Bot struct {
-	bot   *telebot.Bot
 	store *storage.Store
 	cfg   config.Config
 	log   *slog.Logger
+
+	mu      sync.Mutex
+	bot     *telebot.Bot
+	name    string
+	lastErr string
+	nextTry time.Time
+	ready   bool
 }
 
-// New собирает бота на long polling: вебхук потребовал бы публичного адреса
-// и сертификата, а бот рассчитан на запуск с домашней машины.
-func New(cfg config.Config, store *storage.Store, log *slog.Logger) (*Bot, error) {
-	b := &Bot{store: store, cfg: cfg, log: log}
-
-	tb, err := telebot.NewBot(telebot.Settings{
-		Token:     cfg.BotToken,
-		Poller:    &telebot.LongPoller{Timeout: 10 * time.Second},
-		ParseMode: telebot.ModeHTML,
-		OnError: func(err error, c telebot.Context) {
-			log.Error("необработанная ошибка обработчика", "error", err)
-			if c != nil {
-				_ = c.Send("Что-то сломалось на моей стороне. Попробуйте ещё раз.")
-			}
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("telegram: подключение к API: %w", err)
+// New собирает бота без сети: к API ходим в Start, чтобы окно и трей
+// поднимались даже если Telegram ещё недоступен.
+func New(cfg config.Config, store *storage.Store, log *slog.Logger) *Bot {
+	if log == nil {
+		log = slog.Default()
 	}
-	b.bot = tb
-
-	b.routes()
-	return b, nil
+	return &Bot{store: store, cfg: cfg, log: log}
 }
 
-// Username — имя бота, полезно для логов при старте.
-func (b *Bot) Username() string { return b.bot.Me.Username }
+// Username — @имя без собаки. Пока нет связи, пустая строка.
+func (b *Bot) Username() string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.name != "" {
+		return b.name
+	}
+	if b.bot != nil && b.bot.Me != nil {
+		return b.bot.Me.Username
+	}
+	return ""
+}
+
+// StatusText — что показать в окне и в подсказке трея, пока нет связи.
+// Пустая строка: Telegram на месте, статус отдаёт трекер.
+func (b *Bot) StatusText() string {
+	if b == nil {
+		return ""
+	}
+	b.mu.Lock()
+	ready, next, last := b.ready, b.nextTry, b.lastErr
+	b.mu.Unlock()
+	if ready {
+		return ""
+	}
+	if !next.IsZero() {
+		left := time.Until(next)
+		msg := "Нет связи с Telegram · повтор через " + formatRetry(left)
+		if last != "" {
+			msg += " · " + last
+		}
+		return msg
+	}
+	return "Подключаюсь к Telegram…"
+}
 
 func (b *Bot) routes() {
 	b.bot.Use(b.accessMiddleware)
@@ -91,19 +126,116 @@ func (b *Bot) routes() {
 	b.bot.Handle(&unsub, b.handleUnsubButton)
 }
 
-// Start блокируется до отмены контекста.
+// Start держит связь с Telegram, пока жив контекст: если сети нет,
+// ждёт и пробует снова. Процесс из-за этого не завершается.
 func (b *Bot) Start(ctx context.Context) {
-	go func() {
-		<-ctx.Done()
-		b.bot.Stop()
-	}()
-	b.bot.Start()
+	delay := tgRetryMin
+	for ctx.Err() == nil {
+		b.setConnecting()
+		tb, err := b.dial()
+		if err != nil {
+			b.setRetry(err, delay)
+			b.log.Warn("нет связи с Telegram, повторю", "delay", delay, "error", redactTelegram(err.Error()))
+			if !sleepCtx(ctx, delay) {
+				return
+			}
+			delay += 5 * time.Second
+			if delay > tgRetryMax {
+				delay = tgRetryMax
+			}
+			continue
+		}
+		delay = tgRetryMin
+		b.attach(tb)
+		b.log.Info("есть связь с Telegram", "username", b.Username())
+		stopWatch := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				tb.Stop()
+			case <-stopWatch:
+			}
+		}()
+		tb.Start()
+		close(stopWatch)
+		b.detach(tb)
+		if ctx.Err() != nil {
+			return
+		}
+		b.log.Warn("опрос Telegram остановился, подключаюсь снова")
+	}
+}
+
+func (b *Bot) dial() (*telebot.Bot, error) {
+	log := b.log
+	tb, err := telebot.NewBot(telebot.Settings{
+		Token:     b.cfg.BotToken,
+		Poller:    &telebot.LongPoller{Timeout: 10 * time.Second},
+		ParseMode: telebot.ModeHTML,
+		OnError: func(err error, c telebot.Context) {
+			log.Error("необработанная ошибка обработчика", "error", redactTelegram(err.Error()))
+			if c != nil {
+				_ = c.Send("Что-то сломалось на моей стороне. Попробуйте ещё раз.")
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tb, nil
+}
+
+func (b *Bot) attach(tb *telebot.Bot) {
+	b.mu.Lock()
+	b.bot = tb
+	b.ready = true
+	b.lastErr = ""
+	b.nextTry = time.Time{}
+	if tb.Me != nil {
+		b.name = tb.Me.Username
+	}
+	b.mu.Unlock()
+	b.routes()
+}
+
+func (b *Bot) detach(tb *telebot.Bot) {
+	b.mu.Lock()
+	if b.bot == tb {
+		b.bot = nil
+		b.ready = false
+	}
+	b.mu.Unlock()
+}
+
+func (b *Bot) setConnecting() {
+	b.mu.Lock()
+	b.ready = false
+	b.nextTry = time.Time{}
+	b.mu.Unlock()
+}
+
+func (b *Bot) setRetry(err error, wait time.Duration) {
+	b.mu.Lock()
+	b.ready = false
+	b.nextTry = time.Now().Add(wait)
+	b.lastErr = clipLog(redactTelegram(err.Error()), 80)
+	b.mu.Unlock()
+}
+
+func (b *Bot) live() *telebot.Bot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.bot
 }
 
 // Notify отправляет HTML-сообщение в личку. Нужен трекеру цен.
 func (b *Bot) Notify(_ context.Context, chatID int64, message string) error {
+	tb := b.live()
+	if tb == nil {
+		return errOffline
+	}
 	b.log.Info("отправка в Telegram", "chat_id", chatID, "bytes", len(message))
-	_, err := b.bot.Send(telebot.ChatID(chatID), message, telebot.NoPreview)
+	_, err := tb.Send(telebot.ChatID(chatID), message, telebot.NoPreview)
 	return err
 }
 
@@ -365,4 +497,35 @@ func clipLog(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+func redactTelegram(s string) string {
+	return tokenInText.ReplaceAllString(s, "bot***")
+}
+
+func formatRetry(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int(d.Round(time.Second).Seconds())
+	switch {
+	case s >= 60:
+		return fmt.Sprintf("%d мин %d с", s/60, s%60)
+	default:
+		return fmt.Sprintf("%d с", s)
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
