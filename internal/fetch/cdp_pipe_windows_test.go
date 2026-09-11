@@ -25,3 +25,11 @@ func TestWriteReadCDP(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestForgetDropsPending(t *testing.T) {
+	pc := &pipeChrome{pending: map[int]chan cdpMsg{7: make(chan cdpMsg, 1)}}
+	pc.forget(7)
+	if _, ok := pc.pending[7]; ok {
+		t.Fatal("таймаут CDP не должен оставлять pending")
+	}
+}

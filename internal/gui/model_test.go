@@ -84,6 +84,21 @@ func TestSparkline(t *testing.T) {
 	}
 }
 
+func TestSparklineIntoReusesBuffer(t *testing.T) {
+	buf := make([]point, 0, 8)
+	got := sparklineInto(buf, 90, 40, []int64{100, 200, 150})
+	if cap(got) != 8 || len(got) != 3 {
+		t.Fatalf("len=%d cap=%d", len(got), cap(got))
+	}
+	if &got[0] != &buf[:1][0] {
+		t.Fatal("должен писать в переданный буфер")
+	}
+	empty := sparklineInto(got, 0, 40, []int64{1})
+	if empty == nil || len(empty) != 0 || cap(empty) != 8 {
+		t.Fatalf("пустой вход не должен терять ёмкость: len=%d cap=%d nil=%v", len(empty), cap(empty), empty == nil)
+	}
+}
+
 func TestNodeSlots(t *testing.T) {
 	if nodeX(100, 3, 0) != 16 || nodeX(100, 3, 1) != 50 || nodeX(100, 3, 2) != 83 {
 		t.Fatalf("трети: %d %d %d", nodeX(100, 3, 0), nodeX(100, 3, 1), nodeX(100, 3, 2))

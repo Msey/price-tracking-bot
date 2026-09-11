@@ -6,8 +6,17 @@ type point struct{ X, Y int }
 // sparkline раскладывает цены по прямоугольнику. Узлы стоят по центру
 // равных долей ширины: три точки — на каждой трети, десять — на каждой десятой.
 func sparkline(width, height int, prices []int64) []point {
+	return sparklineInto(nil, width, height, prices)
+}
+
+// sparklineInto пишет узлы в dst, если ёмкости хватает. Иначе выделяет
+// новый срез. Пустой вход возвращает dst[:0], чтобы не терять буфер.
+func sparklineInto(dst []point, width, height int, prices []int64) []point {
 	if width < 2 || height < 2 || len(prices) == 0 {
-		return nil
+		if dst == nil {
+			return nil
+		}
+		return dst[:0]
 	}
 	min, max := prices[0], prices[0]
 	for _, p := range prices[1:] {
@@ -33,12 +42,16 @@ func sparkline(width, height int, prices []int64) []point {
 		top, bottom = 0, height-1
 	}
 	usable := bottom - top
-	out := make([]point, len(prices))
+	if cap(dst) < len(prices) {
+		dst = make([]point, len(prices))
+	} else {
+		dst = dst[:len(prices)]
+	}
 	for i, p := range prices {
 		y := bottom - int(float64(p-min)/float64(span)*float64(usable))
-		out[i] = point{X: nodeX(width, len(prices), i), Y: y}
+		dst[i] = point{X: nodeX(width, len(prices), i), Y: y}
 	}
-	return out
+	return dst
 }
 
 // nodeX — центр i-й доли контрола шириной width при n узлах.

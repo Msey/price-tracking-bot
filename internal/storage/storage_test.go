@@ -322,7 +322,7 @@ func TestProductsDueSkipsFreshSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.RecordSnapshot(ctx, fresh.ID, "новый", 15999900, "RUB", true); err != nil {
+	if _, err := s.RecordSnapshot(ctx, fresh.ID, "новый", 15999900, "RUB", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
@@ -355,7 +355,7 @@ func TestRecordSnapshotUpdatesName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordSnapshot(ctx, p.ID, "Honor MagicBook", 15999900, "RUB", true); err != nil {
+	if _, err := s.RecordSnapshot(ctx, p.ID, "Honor MagicBook", 15999900, "RUB", true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.ProductByID(ctx, p.ID)
@@ -385,7 +385,7 @@ func TestListAllRequests(t *testing.T) {
 	if _, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, dnsURL, "moscow"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordSnapshot(ctx, alice.ID, "Honor", 15999900, "RUB", true); err != nil {
+	if _, err := s.RecordSnapshot(ctx, alice.ID, "Honor", 15999900, "RUB", true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -430,7 +430,7 @@ func TestHistoriesOldestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, price := range []int64{10000, 20000, 30000} {
-		if err := s.RecordSnapshot(ctx, p.ID, "Honor", price, "RUB", true); err != nil {
+		if _, err := s.RecordSnapshot(ctx, p.ID, "Honor", price, "RUB", true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -450,5 +450,105 @@ func TestHistoriesOldestFirst(t *testing.T) {
 	}
 	if pts[0].PriceKopecks != 20000 || pts[1].PriceKopecks != 30000 {
 		t.Errorf("порядок цен: %d, %d", pts[0].PriceKopecks, pts[1].PriceKopecks)
+	}
+}
+
+func TestRecordSnapshotSamePriceUpdatesDate(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.RecordSnapshot(ctx, p.ID, "Honor", 15999900, "RUB", true)
+	if err != nil || first {
+		t.Fatalf("первая запись: repeated=%v err=%v", first, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE price_history SET checked_at = '2020-01-01 00:00:00' WHERE product_id = ?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := s.RecordSnapshot(ctx, p.ID, "Honor MagicBook", 15999900, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repeated {
+		t.Fatal("та же цена должна обновить дату, а не вставить строку")
+	}
+	var n int
+	var at string
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), MAX(checked_at) FROM price_history WHERE product_id = ?`, p.ID).Scan(&n, &at); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("строк истории %d, ожидалась 1", n)
+	}
+	if at == "2020-01-01 00:00:00" {
+		t.Fatal("checked_at не обновился")
+	}
+	got, err := s.ProductByID(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Honor MagicBook" {
+		t.Errorf("имя при обновлении даты: %q", got.Name)
+	}
+}
+
+func TestRecordSnapshotAvailabilityChangeInserts(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordSnapshot(ctx, p.ID, "Honor", 15999900, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := s.RecordSnapshot(ctx, p.ID, "Honor", 15999900, "RUB", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated {
+		t.Fatal("смена наличия — новая строка")
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM price_history WHERE product_id = ?`, p.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("строк %d, ожидалось 2", n)
+	}
+	again, err := s.RecordSnapshot(ctx, p.ID, "Honor", 15999900, "RUB", false)
+	if err != nil || !again {
+		t.Fatalf("повтор отсутствия: repeated=%v err=%v", again, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM price_history WHERE product_id = ?`, p.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("после повтора отсутствия строк %d", n)
+	}
+}
+
+func TestRecordSnapshotPriceChangeInserts(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordSnapshot(ctx, p.ID, "Honor", 10000, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := s.RecordSnapshot(ctx, p.ID, "Honor", 9000, "RUB", true)
+	if err != nil || repeated {
+		t.Fatalf("другая цена: repeated=%v err=%v", repeated, err)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM price_history WHERE product_id = ?`, p.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("строк %d", n)
 	}
 }

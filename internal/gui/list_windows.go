@@ -8,6 +8,7 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/view"
 	"github.com/lxn/walk"
+	"github.com/lxn/win"
 )
 
 const rowHeight96 = 74 // компактная строка: в окне видно примерно вдвое больше товаров
@@ -42,6 +43,26 @@ type board struct {
 	onOpen       func(Item)
 	onDelete     func(Item)
 	hoverTrash   bool
+	// spark/wpts живут между кадрами: Invalidate при движении мыши
+	// иначе выделял бы новый срез на каждую видимую строку.
+	spark []point
+	wpts  []walk.Point
+	// measureDC — обычный memory DC для GetTextExtentPoint32. MeasureTextPixels
+	// у walk рисует в CreateEnhMetaFile и не закрывает его до Dispose: каждый
+	// замер подписи и тултипа дописывал записи в EMF, и Working Set рос.
+	measureDC   win.HDC
+	measureDPI  int
+	measureHF   map[*walk.Font]win.HFONT
+	measureSize map[textSizeKey]walk.Rectangle
+	// tipHost — один контейнер на всё окно: двигаем его к узлу и подставляем
+	// дату с ценой, без новой рамки на каждый кадр списка.
+	tipHost  *walk.Composite
+	tipFace  *walk.CustomWidget
+	tipDate  string
+	tipPrice string
+	tipW     int
+	tipH     int
+	tipDPI   int
 }
 
 func (b *board) setItems(next []Item) {
@@ -57,6 +78,7 @@ func (b *board) setItems(next []Item) {
 		b.hoverTrash = false
 	}
 	b.clampScroll()
+	b.syncTip()
 	if b.widget != nil {
 		b.widget.Invalidate()
 	}
@@ -118,11 +140,10 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		return nil
 	}
 
-	first := b.scroll / rowH
-	if first < 0 {
+	var first int
+	if first = b.scroll / rowH; first < 0 {
 		first = 0
 	}
-	var tip *tipGeom
 	for i := first; i < len(b.items); i++ {
 		y := i*rowH - b.scroll
 		if y >= bounds.Height {
@@ -173,21 +194,19 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			mid := chart.Y + chart.Height/2
 			_ = canvas.DrawLinePixels(b.gridPen, walk.Point{X: chart.X, Y: mid}, walk.Point{X: chart.X + chart.Width, Y: mid})
 		}
-		pts := sparkline(chart.Width, chart.Height, item.Points)
+		pts := sparklineInto(b.spark, chart.Width, chart.Height, item.Points)
+		b.spark = pts
 		if len(pts) == 0 {
 			_ = canvas.DrawTextPixels("график появится после первой проверки", b.metaFont, muted, chart, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
 		} else {
-			wpts := make([]walk.Point, len(pts))
-			for j, p := range pts {
-				wpts[j] = walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y}
+			b.wpts = b.wpts[:0]
+			for _, p := range pts {
+				b.wpts = append(b.wpts, walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y})
 			}
-			for j := 1; j < len(wpts) && j < len(item.Points); j++ {
+			for j := 1; j < len(b.wpts) && j < len(item.Points); j++ {
 				if pen := b.sparkPen(item.Points[j-1], item.Points[j]); pen != nil {
-					_ = canvas.DrawLinePixels(pen, wpts[j-1], wpts[j])
+					_ = canvas.DrawLinePixels(pen, b.wpts[j-1], b.wpts[j])
 				}
-			}
-			if i == b.tipItem {
-				tip = &tipGeom{chart: chart, pts: wpts}
 			}
 
 			nodeR := walk.IntFrom96DPI(2, dpi)
@@ -197,7 +216,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			// и тем же числом. Близкие разные цены по-прежнему не наезжают
 			// друг на друга.
 			labelEdge := chart.X
-			for j, p := range wpts {
+			for j, p := range b.wpts {
 				r := nodeR
 				hot := i == b.tipItem && j == b.tipNode
 				if hot {
@@ -216,7 +235,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 					continue
 				}
 				price := money.FormatKopecks(item.Samples[j].Price)
-				box, ok := b.nodePriceBox(canvas, chart, p, price, r, m)
+				box, ok := b.nodePriceBox(chart, p, price, r, m)
 				if !ok || box.X < labelEdge {
 					continue
 				}
@@ -227,15 +246,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		}
 		b.paintTrash(canvas, m.trashRect(row), i == b.hover && b.hoverTrash)
 	}
-	b.paintTip(canvas, bounds, m, tip)
 	return nil
-}
-
-// tipGeom — геометрия строки под курсором, посчитанная во время отрисовки.
-// Иначе подсказке пришлось бы заново считать весь график этой строки.
-type tipGeom struct {
-	chart walk.Rectangle
-	pts   []walk.Point
 }
 
 type boardMetrics struct {
@@ -317,11 +328,11 @@ func (b *board) sparkNode(from, to int64) *walk.SolidColorBrush {
 
 // nodePriceBox — место для ценника узла: над точкой, а если сверху не
 // влезает — под ней. Рамка подгоняется по размеру самого текста.
-func (b *board) nodePriceBox(canvas *walk.Canvas, chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) (walk.Rectangle, bool) {
+func (b *board) nodePriceBox(chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) (walk.Rectangle, bool) {
 	if price == "" || b.metaFont == nil {
 		return walk.Rectangle{}, false
 	}
-	sz := measureLine(canvas, b.metaFont, price)
+	sz := b.measureLine(b.metaFont, price)
 	if sz.Width < 1 {
 		return walk.Rectangle{}, false
 	}
@@ -340,75 +351,6 @@ func (b *board) nodePriceBox(canvas *walk.Canvas, chart walk.Rectangle, p walk.P
 	return walk.Rectangle{X: lx, Y: ly, Width: sz.Width, Height: sz.Height}, true
 }
 
-func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetrics, geom *tipGeom) {
-	if geom == nil || b.tipItem < 0 || b.tipItem >= len(b.items) || b.tipNode < 0 {
-		return
-	}
-	item := b.items[b.tipItem]
-	if b.tipNode >= len(item.Samples) || b.tipNode >= len(geom.pts) {
-		return
-	}
-	sample := item.Samples[b.tipNode]
-	date := sample.When
-	price := money.FormatKopecks(sample.Price)
-	if date == "" && price == "" {
-		return
-	}
-	nx := geom.pts[b.tipNode].X
-	ny := geom.pts[b.tipNode].Y
-
-	dateFont := b.tipFont
-	if dateFont == nil {
-		dateFont = b.metaFont
-	}
-	priceFont := b.tipPriceFont
-	if priceFont == nil {
-		priceFont = b.priceFont
-	}
-	if priceFont == nil {
-		priceFont = dateFont
-	}
-	dateSz := measureLine(canvas, dateFont, date)
-	priceSz := measureLine(canvas, priceFont, price)
-	lineGap := walk.IntFrom96DPI(1, m.dpi)
-	boxPad := walk.IntFrom96DPI(4, m.dpi)
-	innerW := dateSz.Width
-	if priceSz.Width > innerW {
-		innerW = priceSz.Width
-	}
-	innerH := dateSz.Height + lineGap + priceSz.Height
-	tw := innerW + boxPad*2
-	th := innerH + boxPad*2
-	tx := nx - tw/2
-	ty := ny - th - walk.IntFrom96DPI(5, m.dpi)
-	if tx < bounds.X+2 {
-		tx = bounds.X + 2
-	}
-	if tx+tw > bounds.X+bounds.Width-2 {
-		tx = bounds.X + bounds.Width - 2 - tw
-	}
-	if ty < bounds.Y+2 {
-		ty = ny + walk.IntFrom96DPI(6, m.dpi)
-	}
-	tip := walk.Rectangle{X: tx, Y: ty, Width: tw, Height: th}
-	fill := b.rowHot
-	if fill == nil {
-		fill = b.row
-	}
-	if fill != nil {
-		_ = canvas.FillRectanglePixels(fill, tip)
-	}
-	if b.goldPen != nil {
-		_ = canvas.DrawRectanglePixels(b.goldPen, tip)
-	}
-	textClr := walk.RGB(243, 234, 220)
-	gold := walk.RGB(226, 182, 87)
-	dateBox := walk.Rectangle{X: tip.X + boxPad, Y: tip.Y + boxPad, Width: innerW, Height: dateSz.Height}
-	priceBox := walk.Rectangle{X: tip.X + boxPad, Y: dateBox.Y + dateSz.Height + lineGap, Width: innerW, Height: priceSz.Height}
-	_ = canvas.DrawTextPixels(date, dateFont, textClr, dateBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-	_ = canvas.DrawTextPixels(price, priceFont, gold, priceBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-}
-
 func (b *board) paintTrash(canvas *walk.Canvas, r walk.Rectangle, hot bool) {
 	icon := b.trash
 	if hot && b.trashHot != nil {
@@ -418,23 +360,6 @@ func (b *board) paintTrash(canvas *walk.Canvas, r walk.Rectangle, hot bool) {
 		return
 	}
 	_ = canvas.DrawImageStretchedPixels(icon, r)
-}
-
-func measureLine(canvas *walk.Canvas, font *walk.Font, text string) walk.Rectangle {
-	if canvas == nil || font == nil || text == "" {
-		return walk.Rectangle{}
-	}
-	sz, _, err := canvas.MeasureTextPixels(text, font, walk.Rectangle{Width: 2000, Height: 200}, walk.TextCalcRect|walk.TextSingleLine|walk.TextNoPrefix)
-	if err != nil {
-		return walk.Rectangle{Width: len([]rune(text)) * 8, Height: 16}
-	}
-	if sz.Width < 1 {
-		sz.Width = 1
-	}
-	if sz.Height < 1 {
-		sz.Height = 1
-	}
-	return sz
 }
 
 func (b *board) rowIndex(y int) int {
@@ -500,64 +425,82 @@ func (b *board) attach(w *walk.CustomWidget) {
 	b.widget = w
 	b.hover, b.tipItem, b.tipNode = -1, -1, -1
 	w.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
-		delta := walk.MouseWheelEventDelta(button)
-		if delta == 0 {
-			return
-		}
-		step := b.rowH() / 2
-		if delta > 0 {
-			b.scroll -= step
-		} else {
-			b.scroll += step
-		}
-		b.clampScroll()
-		w.Invalidate()
+		b.onWheel(walk.MouseWheelEventDelta(button))
 	})
 	// Иначе после растягивания окна под последней строкой остаётся пустота:
 	// прокрутка упирается в старый предел до первого движения колеса.
 	w.SizeChanged().Attach(func() {
 		b.clampScroll()
+		b.syncTip()
 		w.Invalidate()
 	})
 	w.MouseMove().Attach(func(x, y int, _ walk.MouseButton) {
-		idx, node := b.hit(x, y)
-		trash := b.overTrash(x, y)
-		if trash {
-			node = -1
-		}
-		if idx != b.hover || node != b.tipNode || idx != b.tipItem || trash != b.hoverTrash {
-			b.hover = idx
-			b.tipItem = idx
-			b.tipNode = node
-			b.hoverTrash = trash
-			if trash {
-				w.SetCursor(walk.CursorHand())
-			} else {
-				w.SetCursor(walk.CursorArrow())
-			}
-			w.Invalidate()
-		}
+		b.onMouseMove(x, y)
 	})
 	w.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
-		if button != walk.LeftButton {
-			return
-		}
-		idx := b.rowIndex(y)
-		if idx < 0 {
-			return
-		}
-		if b.overTrash(x, y) {
-			if b.onDelete != nil {
-				b.onDelete(b.items[idx])
-			}
-			b.lastIdx = -1
-			return
-		}
-		now := time.Now()
-		if idx == b.lastIdx && now.Sub(b.lastClick) < 400*time.Millisecond && b.onOpen != nil {
-			b.onOpen(b.items[idx])
-		}
-		b.lastClick = now
-		b.lastIdx = idx
+		b.onMouseDown(x, y, button)
 	})
+}
+
+func (b *board) onWheel(delta int) {
+	if delta == 0 || b.widget == nil {
+		return
+	}
+	step := b.rowH() / 2
+	if delta > 0 {
+		b.scroll -= step
+	} else {
+		b.scroll += step
+	}
+	b.clampScroll()
+	b.syncTip()
+	b.widget.Invalidate()
+}
+
+func (b *board) onMouseMove(x, y int) {
+	if b.widget == nil {
+		return
+	}
+	idx, node := b.hit(x, y)
+	trash := b.overTrash(x, y)
+	if trash {
+		node = -1
+	}
+	if idx == b.hover && node == b.tipNode && idx == b.tipItem && trash == b.hoverTrash {
+		return
+	}
+	b.hover = idx
+	b.tipItem = idx
+	b.tipNode = node
+	b.hoverTrash = trash
+	if trash {
+		b.widget.SetCursor(walk.CursorHand())
+	} else {
+		b.widget.SetCursor(walk.CursorArrow())
+	}
+	b.syncTip()
+	b.widget.Invalidate()
+}
+
+func (b *board) onMouseDown(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	idx := b.rowIndex(y)
+	if idx < 0 {
+		return
+	}
+	if b.overTrash(x, y) {
+		if b.onDelete != nil {
+			b.onDelete(b.items[idx])
+		}
+		b.lastIdx = -1
+		return
+	}
+	now := time.Now()
+	if idx == b.lastIdx && now.Sub(b.lastClick) < 400*time.Millisecond && b.onOpen != nil {
+		b.onOpen(b.items[idx])
+	}
+	b.lastClick = now
+	b.lastIdx = idx
 }

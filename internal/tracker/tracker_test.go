@@ -78,6 +78,13 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 	if dns.calls != 4 {
 		t.Fatalf("вызовов fetch %d", dns.calls)
 	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 {
+		t.Fatalf("в истории %d строк, ожидалось 2 (повтор цены обновляет дату)", len(hist))
+	}
 }
 
 func TestMinCheckInterval(t *testing.T) {
@@ -143,7 +150,7 @@ func TestCycleAllChecksFreshProducts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordSnapshot(ctx, p.ID, "Товар", 10000, "RUB", true); err != nil {
+	if _, err := store.RecordSnapshot(ctx, p.ID, "Товар", 10000, "RUB", true); err != nil {
 		t.Fatal(err)
 	}
 

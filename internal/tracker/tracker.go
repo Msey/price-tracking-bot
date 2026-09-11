@@ -354,11 +354,12 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 		return err
 	}
 	t.log.Info("цена записана", "site", p.Site, "product", p.ID, "name", snap.Name, "kopecks", snap.PriceKopecks, "available", snap.Available)
-	if err := t.store.RecordSnapshot(ctx, p.ID, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available); err != nil {
+	repeated, err := t.store.RecordSnapshot(ctx, p.ID, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available)
+	if err != nil {
 		return err
 	}
 
-	history, err := t.store.LastSnapshots(ctx, p.ID, 3)
+	history, err := t.store.LastSnapshots(ctx, p.ID, 2)
 	if err != nil {
 		return err
 	}
@@ -366,7 +367,7 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 	if err != nil {
 		return err
 	}
-	d := Decide(history, notified)
+	d := Decide(history, notified, repeated)
 	switch {
 	case d.Baseline:
 		return t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available)

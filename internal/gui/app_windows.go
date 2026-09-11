@@ -142,16 +142,6 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(priceFont)
-	tipFont, err := walk.NewFont("Segoe UI", 6, 0)
-	if err != nil {
-		return err
-	}
-	keep(tipFont)
-	tipPriceFont, err := walk.NewFont("Segoe UI", 6, walk.FontBold)
-	if err != nil {
-		return err
-	}
-	keep(tipPriceFont)
 
 	bg, err := walk.NewSolidColorBrush(walk.RGB(22, 20, 16))
 	if err != nil {
@@ -225,24 +215,22 @@ func Run(ctx context.Context, opt Options) error {
 		logEnabled:    opt.LogEnabled,
 		setLogEnabled: opt.SetLogEnabled,
 		board: &board{
-			titleFont:    titleFont,
-			metaFont:     metaFont,
-			priceFont:    priceFont,
-			tipFont:      tipFont,
-			tipPriceFont: tipPriceFont,
-			bg:           bg,
-			row:          row,
-			rowHot:       rowSel,
-			accent:       accent,
-			upBrush:      upBrush,
-			downBrush:    downBrush,
-			goldPen:      goldPen,
-			upPen:        upPen,
-			downPen:      downPen,
-			gridPen:      gridPen,
-			hover:        -1,
-			tipItem:      -1,
-			tipNode:      -1,
+			titleFont: titleFont,
+			metaFont:  metaFont,
+			priceFont: priceFont,
+			bg:        bg,
+			row:       row,
+			rowHot:    rowSel,
+			accent:    accent,
+			upBrush:   upBrush,
+			downBrush: downBrush,
+			goldPen:   goldPen,
+			upPen:     upPen,
+			downPen:   downPen,
+			gridPen:   gridPen,
+			hover:     -1,
+			tipItem:   -1,
+			tipNode:   -1,
 		},
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
@@ -275,6 +263,7 @@ func Run(ctx context.Context, opt Options) error {
 		a.board.icons[string(site)] = bmp
 		keep(bmp)
 	}
+	keep(disposeFunc(func() { a.board.disposeMeasure() }))
 
 	muted := walk.RGB(154, 141, 122)
 	gold := walk.RGB(226, 182, 87)
@@ -321,6 +310,7 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	a.board.attach(canvas)
+	keep(disposeFunc(func() { a.board.disposeTip() }))
 	a.updateCheckUI()
 	if a.setLogEnabled == nil && a.logBtn != nil {
 		a.logBtn.SetVisible(false)

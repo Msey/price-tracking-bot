@@ -7,40 +7,59 @@ import (
 )
 
 func TestDecideWaitsForConfirmation(t *testing.T) {
-	d := Decide(rows(100), notified(false, 0, true))
+	d := Decide(rows(100), notified(false, 0, true), false)
 	if d.Notify || d.Baseline {
 		t.Fatalf("первый замер: %+v", d)
 	}
 
-	d = Decide(rows(100, 100), notified(false, 0, true))
+	d = Decide(rows(100), notified(false, 0, true), true)
 	if !d.Baseline || d.Notify {
 		t.Fatalf("база: %+v", d)
 	}
 
-	d = Decide(rows(90, 100), notified(true, 100, true))
+	d = Decide(rows(90, 100), notified(true, 100, true), false)
 	if d.Notify {
 		t.Fatalf("одно новое не должно уведомлять: %+v", d)
 	}
 
-	d = Decide(rows(90, 90, 100), notified(true, 100, true))
+	d = Decide(rows(90, 100), notified(true, 100, true), true)
 	if !d.Notify || d.Previous.PriceKopecks != 100 || d.Current.PriceKopecks != 90 {
 		t.Fatalf("подтверждённое снижение: %+v", d)
 	}
 
-	d = Decide(rows(90, 90, 90), notified(true, 90, true))
+	d = Decide(rows(90), notified(true, 90, true), true)
 	if d.Notify {
 		t.Fatalf("повтор не уведомляет: %+v", d)
 	}
 }
 
 func TestDecideIgnoresFlapping(t *testing.T) {
-	d := Decide(rows(100, 90), notified(true, 100, true))
+	d := Decide(rows(90, 100), notified(true, 100, true), false)
 	if d.Notify {
 		t.Fatal("флап 100→90 один раз")
 	}
-	d = Decide(rows(90, 100, 90), notified(true, 100, true))
+	d = Decide(rows(100, 90, 100), notified(true, 100, true), false)
 	if d.Notify {
 		t.Fatal("флап обратно")
+	}
+}
+
+func TestDecideEmptyHistory(t *testing.T) {
+	d := Decide(nil, notified(true, 100, true), true)
+	if d.Notify || d.Baseline {
+		t.Fatalf("пустая история: %+v", d)
+	}
+}
+
+func TestDecideAvailabilityChange(t *testing.T) {
+	cur := []storage.SnapshotRow{{PriceKopecks: 100, Available: false}, {PriceKopecks: 100, Available: true}}
+	d := Decide(cur, notified(true, 100, true), false)
+	if d.Notify {
+		t.Fatal("смена наличия без повтора")
+	}
+	d = Decide(cur, notified(true, 100, true), true)
+	if !d.Notify || d.Current.Available || d.Previous.Available != true {
+		t.Fatalf("подтверждённое отсутствие: %+v", d)
 	}
 }
 

@@ -21,6 +21,8 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 	told := false
 	var last pageBits
 	var lastErr error = ErrNoPrice
+	poll := time.NewTimer(pollEvery)
+	defer poll.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -29,6 +31,7 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			}
 			return Snapshot{}, ctx.Err()
 		case last = <-bits:
+			resetTimer(poll, pollEvery)
 			if hardBlocked(last) {
 				return Snapshot{}, challengeWithTitle(last.Title)
 			}
@@ -46,7 +49,8 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 					deadline = time.Now().Add(captchaWait)
 				}
 			}
-		case <-time.After(pollEvery):
+		case <-poll.C:
+			resetTimer(poll, pollEvery)
 			if time.Now().After(deadline) {
 				if needsHuman(last) || hardBlocked(last) {
 					return Snapshot{}, challengeWithTitle(last.Title)
@@ -58,6 +62,16 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			}
 		}
 	}
+}
+
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
 }
 
 // isBanError — магазин оборвал соединение, а не страница оказалась пустой.

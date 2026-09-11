@@ -71,3 +71,34 @@ func TestWaitForBitsQRATORScriptWaitsForPrice(t *testing.T) {
 		t.Fatalf("цена %d", snap.PriceKopecks)
 	}
 }
+
+func TestWaitForBitsManySnapshotsReuseTimer(t *testing.T) {
+	ch := make(chan pageBits, 64)
+	for i := 0; i < 50; i++ {
+		ch <- pageBits{Title: "ещё грузится"}
+	}
+	ch <- pageBits{CSSPrice: "100 ₽", Title: "Товар"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	snap, err := waitForBits(ctx, time.Second, ch, parseBits, nil)
+	if err != nil {
+		t.Fatalf("waitForBits: %v", err)
+	}
+	if snap.PriceKopecks != 10000 {
+		t.Fatalf("цена %d", snap.PriceKopecks)
+	}
+}
+
+func TestResetTimer(t *testing.T) {
+	tm := time.NewTimer(time.Hour)
+	resetTimer(tm, time.Millisecond)
+	select {
+	case <-tm.C:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("таймер не сбросился")
+	}
+	resetTimer(tm, time.Hour)
+	if !tm.Stop() {
+		t.Fatal("после Reset таймер должен ещё ждать")
+	}
+}

@@ -180,9 +180,11 @@ func (pc *pipeChrome) waitExit(d time.Duration) {
 		_ = pc.cmd.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(d):
+	case <-timer.C:
 		_ = pc.cmd.Process.Kill()
 		<-done
 	}
@@ -300,24 +302,38 @@ func (pc *pipeChrome) callOn(sessionID, method string, params any, timeout time.
 	body, err := json.Marshal(msg)
 	pc.mu.Unlock()
 	if err != nil {
+		pc.forget(id)
 		return nil, err
 	}
 	if err := writeCDP(pc.to, body); err != nil {
+		pc.forget(id)
 		return nil, fmt.Errorf("cdp write: %w", err)
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case msg := <-ch:
-		if msg.Error != nil {
-			return nil, fmt.Errorf("%s: %s", method, msg.Error.Message)
-		}
-		return msg.Result, nil
+		return resultOrErr(method, msg)
 	case <-timer.C:
+		pc.forget(id)
 		return nil, fmt.Errorf("%s: нет ответа", method)
 	case <-pc.closed:
+		pc.forget(id)
 		return nil, fmt.Errorf("%s: chrome закрыт", method)
 	}
+}
+
+func resultOrErr(method string, msg cdpMsg) (json.RawMessage, error) {
+	if msg.Error != nil {
+		return nil, fmt.Errorf("%s: %s", method, msg.Error.Message)
+	}
+	return msg.Result, nil
+}
+
+func (pc *pipeChrome) forget(id int) {
+	pc.mu.Lock()
+	delete(pc.pending, id)
+	pc.mu.Unlock()
 }
 
 func (pc *pipeChrome) readLoop() {

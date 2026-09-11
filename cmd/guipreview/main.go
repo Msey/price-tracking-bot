@@ -44,7 +44,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	for _, price := range []int64{15999900, 15499900, 14999900, 15200000} {
-		if err := store.RecordSnapshot(ctx, p.ID, "Honor MagicBook", price, "RUB", true); err != nil {
+		if _, err := store.RecordSnapshot(ctx, p.ID, "Honor MagicBook", price, "RUB", true); err != nil {
 			return err
 		}
 	}

@@ -12,18 +12,22 @@ type Decision struct {
 	Current  storage.SnapshotRow
 }
 
-// Decide смотрит историю newest-first, включая только что записанный замер.
+// Decide смотрит историю newest-first и флаг repeated от RecordSnapshot.
 //
-// Уведомляем только когда одно и то же значение пришло два раза подряд —
-// так отсекаются одноразовые A/B-цены. Первая устойчивая цена становится
-// базой и в чат не пишется.
-func Decide(history []storage.SnapshotRow, notified storage.NotifiedState) Decision {
-	if len(history) < 2 {
+// Повтор той же цены не плодит строку в БД, поэтому подтверждение A/B —
+// это repeated=true, а не две одинаковые записи подряд. Уведомляем только
+// когда одно и то же значение пришло два раза. Первая устойчивая цена
+// становится базой и в чат не пишется.
+func Decide(history []storage.SnapshotRow, notified storage.NotifiedState, repeated bool) Decision {
+	if len(history) == 0 {
 		return Decision{}
 	}
-	cur, prev := history[0], history[1]
-	if !same(cur, prev) {
-		return Decision{Current: cur, Previous: prev}
+	cur := history[0]
+	if !repeated {
+		if len(history) >= 2 {
+			return Decision{Current: cur, Previous: history[1]}
+		}
+		return Decision{Current: cur}
 	}
 	if !notified.Set {
 		return Decision{Baseline: true, Current: cur}
@@ -36,8 +40,4 @@ func Decide(history []storage.SnapshotRow, notified storage.NotifiedState) Decis
 		Current:  cur,
 		Previous: storage.SnapshotRow{PriceKopecks: notified.Kopecks, Available: notified.Available},
 	}
-}
-
-func same(a, b storage.SnapshotRow) bool {
-	return a.PriceKopecks == b.PriceKopecks && a.Available == b.Available
 }

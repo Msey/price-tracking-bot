@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -84,11 +85,16 @@ func (s *Store) ActiveProducts(ctx context.Context, site string) ([]Product, err
 	return out, nil
 }
 
-// RecordSnapshot пишет замер и при необходимости обновляет имя товара.
-func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string, kopecks int64, currency string, available bool) error {
+// RecordSnapshot пишет замер. Если цена, валюта и наличие совпали с последней
+// записью товара, новая строка не создаётся — обновляется только checked_at.
+// repeated=true как раз в этом случае: подтверждение A/B без плато в истории.
+func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string, kopecks int64, currency string, available bool) (repeated bool, err error) {
+	if currency == "" {
+		currency = "RUB"
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("storage: начало транзакции замера: %w", err)
+		return false, fmt.Errorf("storage: начало транзакции замера: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -96,20 +102,43 @@ func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string
 	if available {
 		avail = 1
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO price_history (product_id, price_kopecks, currency, available, checked_at)
-		VALUES (?, ?, ?, ?, ?)`, productID, kopecks, currency, avail, formatTime(time.Now())); err != nil {
-		return fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
+	now := formatTime(time.Now())
+
+	var lastID, lastKopecks int64
+	var lastCurrency string
+	var lastAvail int
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, price_kopecks, currency, available
+		FROM price_history
+		WHERE product_id = ?
+		ORDER BY checked_at DESC, id DESC
+		LIMIT 1`, productID).Scan(&lastID, &lastKopecks, &lastCurrency, &lastAvail)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return false, fmt.Errorf("storage: последняя цена товара %d: %w", productID, err)
+	case lastKopecks == kopecks && lastAvail == avail && lastCurrency == currency:
+		if _, err := tx.ExecContext(ctx, `UPDATE price_history SET checked_at = ? WHERE id = ?`, now, lastID); err != nil {
+			return false, fmt.Errorf("storage: обновление даты товара %d: %w", productID, err)
+		}
+		repeated = true
+	}
+	if !repeated {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO price_history (product_id, price_kopecks, currency, available, checked_at)
+			VALUES (?, ?, ?, ?, ?)`, productID, kopecks, currency, avail, now); err != nil {
+			return false, fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
+		}
 	}
 	if name != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE products SET name = ? WHERE id = ? AND name != ?`, name, productID, name); err != nil {
-			return fmt.Errorf("storage: имя товара %d: %w", productID, err)
+			return false, fmt.Errorf("storage: имя товара %d: %w", productID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("storage: фиксация замера: %w", err)
+		return false, fmt.Errorf("storage: фиксация замера: %w", err)
 	}
-	return nil
+	return repeated, nil
 }
 
 // LastSnapshots возвращает последние n замеров, сначала самые новые.
