@@ -17,11 +17,15 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+	"github.com/Msey/price-tracking-bot/internal/view"
 )
 
 const (
 	requestTimeout = 5 * time.Second
 	unsubUnique    = "unsub"
+	// listBudget — сколько байт списка отдаём под товары. У Telegram предел
+	// сообщения 4096 символов, остаток оставлен на заголовок и хвост.
+	listBudget = 3600
 )
 
 const helpText = `Я слежу за ценами и пишу, когда они меняются.
@@ -248,11 +252,13 @@ func (b *Bot) handleUnsubButton(c telebot.Context) error {
 		return err
 	}
 
-	text := "Снято с отслеживания"
 	if !removed {
-		text = "Этого товара уже нет в списке"
+		// Повторный щелчок по той же корзине: список на экране уже верный.
+		// Если его переслать, Telegram ответит «message is not modified»,
+		// и человек без причины получит «что-то сломалось».
+		return c.Respond(&telebot.CallbackResponse{Text: "Этого товара уже нет в списке"})
 	}
-	if err := c.Respond(&telebot.CallbackResponse{Text: text}); err != nil {
+	if err := c.Respond(&telebot.CallbackResponse{Text: "Снято с отслеживания"}); err != nil {
 		return err
 	}
 
@@ -280,10 +286,23 @@ func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.R
 	var sb strings.Builder
 
 	fmt.Fprintf(&sb, "Отслеживаю товаров: %d\n", len(items))
+	shown := 0
 	for i, item := range items {
-		fmt.Fprintf(&sb, "\n%d. %s\n   %s", i+1, linkTo(item.Product), html.EscapeString(describePrice(item)))
+		entry := fmt.Sprintf("\n%d. %s\n   %s", i+1, linkTo(item.Product), html.EscapeString(describePrice(item)))
+		// Названия приходят из магазинов и бывают длинными: на пределе
+		// подписок список перестаёт влезать в сообщение, Telegram отвечает
+		// 400, и человек больше не может ни посмотреть список, ни удалить
+		// из него товар. Поэтому длина считается по факту.
+		if sb.Len()+len(entry) > listBudget {
+			break
+		}
+		sb.WriteString(entry)
+		shown++
 		rows = append(rows, markup.Row(markup.Data(
 			fmt.Sprintf("🗑 %d", i+1), unsubUnique, strconv.FormatInt(item.Product.ID, 10))))
+	}
+	if shown < len(items) {
+		fmt.Fprintf(&sb, "\n\nПоказаны первые %d из %d. Удалите лишние через 🗑 или /del.", shown, len(items))
 	}
 	markup.Inline(rows...)
 	return sb.String(), markup, nil
@@ -304,9 +323,7 @@ func explainParseError(err error) string {
 	}
 }
 
-func linkTo(p storage.Product) string {
-	return fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(p.URL), html.EscapeString(p.Title()))
-}
+func linkTo(p storage.Product) string { return view.TelegramLink(p) }
 
 func describePrice(t storage.Tracked) string {
 	if !t.LastPriceKopecks.Valid {

@@ -2,13 +2,11 @@ package gui
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+	"github.com/Msey/price-tracking-bot/internal/view"
 )
 
 const historyPoints = 90
@@ -23,7 +21,6 @@ type Item struct {
 	City      string
 	Price     string
 	Status    string
-	Kind      string
 	Checked   string
 	Watchers  int
 	Points    []int64
@@ -36,25 +33,37 @@ type Sample struct {
 	When  string
 }
 
-func (it Item) fingerprint() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%d", it.ProductID, it.Title, it.Price, it.Status, it.Checked, it.Watchers)
-	for i, p := range it.Points {
-		fmt.Fprintf(&b, "|%d", p)
-		if i < len(it.Samples) {
-			fmt.Fprintf(&b, "@%s", it.Samples[i].When)
+// sameItems — список не изменился и перерисовывать нечего. Сравниваются
+// поля напрямую: строить строку-отпечаток на каждый опрос значило бы
+// впустую собирать и выбрасывать сотни килобайт каждые четыре секунды.
+func sameItems(a, b []Item) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].same(b[i]) {
+			return false
 		}
 	}
-	return b.String()
+	return true
 }
 
-func fingerprints(items []Item) string {
-	var b strings.Builder
-	for _, it := range items {
-		b.WriteString(it.fingerprint())
-		b.WriteByte('\n')
+func (it Item) same(other Item) bool {
+	if it.ProductID != other.ProductID ||
+		it.Title != other.Title ||
+		it.Price != other.Price ||
+		it.Status != other.Status ||
+		it.Checked != other.Checked ||
+		it.Watchers != other.Watchers ||
+		len(it.Samples) != len(other.Samples) {
+		return false
 	}
-	return b.String()
+	for i := range it.Samples {
+		if it.Samples[i] != other.Samples[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
@@ -77,7 +86,7 @@ func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
 		samples := make([]Sample, 0, len(rows))
 		for _, row := range rows {
 			pts = append(pts, row.PriceKopecks)
-			samples = append(samples, Sample{Price: row.PriceKopecks, When: formatWhenFull(row.CheckedAt)})
+			samples = append(samples, Sample{Price: row.PriceKopecks, When: view.FormatWhenShort(row.CheckedAt)})
 		}
 		grouped[i].Points = pts
 		grouped[i].Samples = samples
@@ -107,14 +116,14 @@ func groupRequests(reqs []storage.Request) []Item {
 }
 
 func itemFromRequest(req storage.Request) Item {
-	status, kind := statusOf(req)
+	status, _ := view.Status(req)
 	price := "—"
 	if req.LastPriceKopecks.Valid {
 		price = money.FormatKopecks(req.LastPriceKopecks.Int64)
 	}
 	checked := "ещё не проверяли"
 	if req.LastCheckedAt.Valid && req.LastCheckedAt.String != "" {
-		checked = formatWhen(req.LastCheckedAt.String)
+		checked = view.FormatWhen(req.LastCheckedAt.String)
 	}
 	return Item{
 		ProductID: req.Product.ID,
@@ -122,79 +131,10 @@ func itemFromRequest(req storage.Request) Item {
 		URL:       req.Product.URL,
 		SiteKey:   req.Product.Site,
 		Site:      sites.Site(req.Product.Site).Title(),
-		City:      cityTitle(req.Product.City),
+		City:      view.CityTitle(req.Product.City),
 		Price:     price,
 		Status:    status,
-		Kind:      kind,
 		Checked:   checked,
-	}
-}
-
-func statusOf(req storage.Request) (string, string) {
-	if !req.LastCheckedAt.Valid {
-		if req.LastErrorKind.Valid && req.LastErrorKind.String != "" {
-			return "ошибка загрузки", "bad"
-		}
-		return "ожидает проверку", "wait"
-	}
-	if req.LastErrorAt.Valid && req.LastErrorAt.String > req.LastCheckedAt.String {
-		return "ошибка после проверки", "bad"
-	}
-	if req.LastAvailable.Valid && req.LastAvailable.Int64 == 0 {
-		return "нет в наличии", "bad"
-	}
-	return "отслеживается", "ok"
-}
-
-func cityTitle(city string) string {
-	switch strings.ToLower(strings.TrimSpace(city)) {
-	case "moscow":
-		return "Москва"
-	default:
-		return city
-	}
-}
-
-func formatWhen(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "—"
-	}
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
-	if err != nil {
-		return raw
-	}
-	return t.Local().Format("02.01.2006 15:04")
-}
-
-func formatWhenFull(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "—"
-	}
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
-	if err != nil {
-		return raw
-	}
-	return t.Local().Format("02.01.06 15:04")
-}
-
-func ruPlural(n int, one, few, many string) string {
-	if n < 0 {
-		n = -n
-	}
-	mod100 := n % 100
-	mod10 := n % 10
-	if mod100 >= 11 && mod100 <= 14 {
-		return many
-	}
-	switch mod10 {
-	case 1:
-		return one
-	case 2, 3, 4:
-		return few
-	default:
-		return many
 	}
 }
 
@@ -210,28 +150,6 @@ func newProducts(prev, next []Item) []Item {
 		}
 	}
 	return added
-}
-
-func sameProductOrder(a, b []Item) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].ProductID != b[i].ProductID {
-			return false
-		}
-	}
-	return true
-}
-
-func changedIndexes(prev, next []Item) []int {
-	var out []int
-	for i := range next {
-		if prev[i].fingerprint() != next[i].fingerprint() {
-			out = append(out, i)
-		}
-	}
-	return out
 }
 
 func priceChanges(prev, next []Item) []string {

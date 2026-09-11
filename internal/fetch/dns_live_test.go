@@ -21,7 +21,7 @@ func TestLiveDNSFetch(t *testing.T) {
 		t.Skip("нет Chrome")
 	}
 
-	d := NewDNS(DNSOptions{
+	d := NewDNS(ShopOptions{
 		ProfileDir:      filepath.Join(t.TempDir(), "profile"),
 		ChromePath:      chrome,
 		Headless:        false,

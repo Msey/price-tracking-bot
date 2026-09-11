@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -86,39 +85,5 @@ func TestIndexNotFound(t *testing.T) {
 	}
 }
 
-func TestRuPlural(t *testing.T) {
-	cases := map[int]string{0: "заявок", 1: "заявка", 2: "заявки", 5: "заявок", 11: "заявок", 21: "заявка", 22: "заявки"}
-	for n, want := range cases {
-		if got := ruPlural(n, "заявка", "заявки", "заявок"); got != want {
-			t.Errorf("%d: %s, ожидалось %s", n, got, want)
-		}
-	}
-}
-
-func TestStatusOf(t *testing.T) {
-	got, class := statusOf(storage.Request{})
-	if got != "ожидает проверку" || class != "wait" {
-		t.Errorf("пусто: %s / %s", got, class)
-	}
-
-	got, class = statusOf(storage.Request{LastErrorKind: sql.NullString{String: "challenge", Valid: true}})
-	if got != "ошибка загрузки" || class != "bad" {
-		t.Errorf("ошибка без проверки: %s / %s", got, class)
-	}
-
-	got, class = statusOf(storage.Request{
-		LastCheckedAt: sql.NullString{String: "2026-01-02 03:04:05", Valid: true},
-		LastAvailable: sql.NullInt64{Int64: 0, Valid: true},
-	})
-	if got != "нет в наличии" || class != "bad" {
-		t.Errorf("oos: %s / %s", got, class)
-	}
-
-	got, class = statusOf(storage.Request{
-		LastCheckedAt: sql.NullString{String: "2026-01-02 03:04:05", Valid: true},
-		LastErrorAt:   sql.NullString{String: "2026-01-02 04:00:00", Valid: true},
-	})
-	if got != "ошибка после проверки" || class != "bad" {
-		t.Errorf("ошибка после проверки: %s / %s", got, class)
-	}
-}
+// Подписи статусов и формы слов проверяются в internal/view: правила общие
+// для этой страницы и для окна.

@@ -56,11 +56,6 @@ func (s Site) Title() string {
 	}
 }
 
-// Supported сообщает, умеем ли мы уже отслеживать цены в этом магазине.
-func (s Site) Supported() bool {
-	return s == DNS || s == YandexMarket || s == Ozon
-}
-
 // dnsProductPath вытаскивает идентификатор товара из пути вида
 // /product/9ee3a4f41358d9cb/146-noutbuk-honor-magicbook-pro-14/
 var dnsProductPath = regexp.MustCompile(`(?i)^/product/([0-9a-f]{8,32})(?:/|$)`)
@@ -101,9 +96,6 @@ func Parse(raw string) (Ref, error) {
 	site, ok := siteByHost(host)
 	if !ok {
 		return Ref{}, ErrUnknownSite
-	}
-	if !site.Supported() {
-		return Ref{}, fmt.Errorf("%w: %s", ErrNotSupported, site.Title())
 	}
 
 	switch site {
@@ -146,22 +138,21 @@ func parseYandexMarket(u *url.URL) (Ref, error) {
 }
 
 func yandexKeyAndSlug(path string) (key, slug string) {
+	// Регулярки ниже привязаны к началу пути, поэтому префикс уже проверен
+	// и остаётся только вырезать slug.
 	if m := yandexCardPath.FindStringSubmatch(path); m != nil {
 		key = m[1]
 		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) >= 3 && strings.EqualFold(parts[0], "card") && parts[2] == key {
+		if len(parts) >= 3 && parts[2] == key {
 			slug = parts[1]
 		}
 		return key, slug
 	}
 	if m := yandexProductDashPath.FindStringSubmatch(path); m != nil {
 		key = m[1]
-		const prefix = "/product--"
-		if len(path) >= len(prefix) && strings.EqualFold(path[:len(prefix)], prefix) {
-			after := path[len(prefix):]
-			if slash := strings.IndexByte(after, '/'); slash > 0 {
-				slug = after[:slash]
-			}
+		after := path[len("/product--"):]
+		if slash := strings.IndexByte(after, '/'); slash > 0 {
+			slug = after[:slash]
 		}
 		return key, slug
 	}
@@ -193,7 +184,9 @@ func siteByHost(host string) (Site, bool) {
 		return Wildberries, true
 	case "ozon.ru", "www.ozon.ru", "m.ozon.ru":
 		return Ozon, true
-	case "market.yandex.ru", "www.market.yandex.ru", "m.market.yandex.ru", "market.yandex.by":
+	// market.yandex.by сознательно не принимаем: канон ведёт на .ru, и цена
+	// в белорусских рублях отслеживалась бы как российская.
+	case "market.yandex.ru", "www.market.yandex.ru", "m.market.yandex.ru":
 		return YandexMarket, true
 	default:
 		return "", false

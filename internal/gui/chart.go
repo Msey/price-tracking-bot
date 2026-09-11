@@ -22,7 +22,13 @@ func sparkline(width, height int, prices []int64) []point {
 	if span == 0 {
 		span = 1
 	}
-	top, bottom := 3, height-4
+	// Отступы сверху и снизу — доля высоты, а не фиксированные пиксели:
+	// на экране с двойной плотностью график иначе упирался бы в края строки.
+	inset := height / 14
+	if inset < 1 {
+		inset = 1
+	}
+	top, bottom := inset, height-1-inset
 	if bottom <= top {
 		top, bottom = 0, height-1
 	}

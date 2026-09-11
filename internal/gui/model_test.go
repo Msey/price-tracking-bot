@@ -3,23 +3,9 @@ package gui
 import (
 	"database/sql"
 	"testing"
-	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
-
-func TestFormatWhenFull(t *testing.T) {
-	raw := "2026-09-11 05:40:00"
-	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := formatWhenFull(raw)
-	want := parsed.Local().Format("02.01.06 15:04")
-	if got != want {
-		t.Fatalf("formatWhenFull = %q, ожидалось %q", got, want)
-	}
-}
 
 func TestGroupRequestsDedupsProduct(t *testing.T) {
 	p := storage.Product{ID: 7, Site: "dns", Name: "Honor", URL: "https://www.dns-shop.ru/product/aa/", City: "moscow"}
@@ -60,15 +46,20 @@ func TestNewProductsAndPriceChanges(t *testing.T) {
 	}
 }
 
-func TestSameOrderAndChangedIndexes(t *testing.T) {
-	a := []Item{{ProductID: 1, Title: "A", Price: "1"}, {ProductID: 2, Title: "B", Price: "2"}}
-	b := []Item{{ProductID: 1, Title: "A", Price: "1"}, {ProductID: 2, Title: "B", Price: "3"}}
-	if !sameProductOrder(a, b) {
-		t.Fatal("порядок тот же")
+func TestSameItems(t *testing.T) {
+	a := []Item{{ProductID: 1, Title: "A", Price: "1", Samples: []Sample{{Price: 100, When: "01.01.26 10:00"}}}}
+	b := []Item{{ProductID: 1, Title: "A", Price: "1", Samples: []Sample{{Price: 100, When: "01.01.26 10:00"}}}}
+	if !sameItems(a, b) {
+		t.Fatal("одинаковые списки должны совпасть")
 	}
-	got := changedIndexes(a, b)
-	if len(got) != 1 || got[0] != 1 {
-		t.Fatalf("changed = %v", got)
+	if sameItems(a, []Item{{ProductID: 1, Title: "A", Price: "2", Samples: a[0].Samples}}) {
+		t.Error("смена цены должна давать различие")
+	}
+	if sameItems(a, []Item{{ProductID: 1, Title: "A", Price: "1", Samples: []Sample{{Price: 100, When: "02.01.26 10:00"}}}}) {
+		t.Error("новый замер должен давать различие")
+	}
+	if sameItems(a, nil) {
+		t.Error("разная длина — различие")
 	}
 }
 

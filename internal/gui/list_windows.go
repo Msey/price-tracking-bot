@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/money"
+	"github.com/Msey/price-tracking-bot/internal/view"
 	"github.com/lxn/walk"
 )
 
@@ -34,12 +35,15 @@ type board struct {
 }
 
 func (b *board) setItems(next []Item) {
-	if fingerprints(b.items) == fingerprints(next) {
+	if sameItems(b.items, next) {
 		return
 	}
 	b.items = next
 	if b.tipItem >= len(b.items) {
 		b.tipItem, b.tipNode = -1, -1
+	}
+	if b.hover >= len(b.items) {
+		b.hover = -1
 	}
 	b.clampScroll()
 	if b.widget != nil {
@@ -47,18 +51,19 @@ func (b *board) setItems(next []Item) {
 	}
 }
 
-func (b *board) rowH() int {
-	dpi := 96
+// dpi — плотность экрана виджета. До создания виджета и на старых системах
+// GetDpiForWindow отдаёт ноль, поэтому ниже 96 не опускаемся.
+func (b *board) dpi() int {
 	if b.widget != nil {
 		if d := b.widget.DPI(); d >= 96 {
-			dpi = d
+			return d
 		}
 	}
-	h := walk.IntFrom96DPI(rowHeight96, dpi)
-	if h < 96 {
-		return 148
-	}
-	return h
+	return 96
+}
+
+func (b *board) rowH() int {
+	return walk.IntFrom96DPI(rowHeight96, b.dpi())
 }
 
 func (b *board) clampScroll() {
@@ -106,6 +111,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 	if first < 0 {
 		first = 0
 	}
+	var tip *tipGeom
 	for i := first; i < len(b.items); i++ {
 		y := i*rowH - b.scroll
 		if y >= bounds.Height {
@@ -143,7 +149,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 
 		meta := item.Site + " · " + item.City + " · " + item.Status
 		if item.Watchers > 1 {
-			meta += " · " + ruPlural(item.Watchers, "подписчик", "подписчика", "подписчиков")
+			meta += " · " + view.RuPlural(item.Watchers, "подписчик", "подписчика", "подписчиков")
 		}
 		if item.Checked != "" {
 			meta += " · " + item.Checked
@@ -168,11 +174,20 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		if b.goldPen != nil {
 			_ = canvas.DrawPolylinePixels(b.goldPen, wpts)
 		}
+		if i == b.tipItem {
+			tip = &tipGeom{chart: chart, pts: wpts}
+		}
+
 		nodeR := walk.IntFrom96DPI(3, dpi)
 		hotR := walk.IntFrom96DPI(5, dpi)
+		// Подписи идут слева направо, и следующая пропускается, если легла бы
+		// на предыдущую: при девяноста замерах на строку все ценники слиплись
+		// бы в кашу. Узел под курсором подписывается всегда.
+		labelEdge := chart.X
 		for j, p := range wpts {
 			r := nodeR
-			if i == b.tipItem && j == b.tipNode {
+			hot := i == b.tipItem && j == b.tipNode
+			if hot {
 				r = hotR
 			}
 			if b.accent != nil {
@@ -180,13 +195,28 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 					X: p.X - r, Y: p.Y - r, Width: r*2 + 1, Height: r*2 + 1,
 				})
 			}
-			if j < len(item.Samples) {
-				b.paintNodePrice(canvas, chart, p, money.FormatKopecks(item.Samples[j].Price), r, m)
+			if j >= len(item.Samples) {
+				continue
 			}
+			price := money.FormatKopecks(item.Samples[j].Price)
+			box, ok := b.nodePriceBox(canvas, chart, p, price, r, m)
+			if !ok || (box.X < labelEdge && !hot) {
+				continue
+			}
+			_ = canvas.DrawTextPixels(price, b.metaFont, gold, box,
+				walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextNoPrefix)
+			labelEdge = box.X + box.Width + walk.IntFrom96DPI(6, dpi)
 		}
 	}
-	b.paintTip(canvas, bounds, m)
+	b.paintTip(canvas, bounds, m, tip)
 	return nil
+}
+
+// tipGeom — геометрия строки под курсором, посчитанная во время отрисовки.
+// Иначе подсказке пришлось бы заново считать весь график этой строки.
+type tipGeom struct {
+	chart walk.Rectangle
+	pts   []walk.Point
 }
 
 type boardMetrics struct {
@@ -194,12 +224,7 @@ type boardMetrics struct {
 }
 
 func (b *board) metrics() boardMetrics {
-	dpi := 96
-	if b.widget != nil {
-		if d := b.widget.DPI(); d >= 96 {
-			dpi = d
-		}
-	}
+	dpi := b.dpi()
 	return boardMetrics{
 		dpi:     dpi,
 		pad:     walk.IntFrom96DPI(16, dpi),
@@ -209,7 +234,7 @@ func (b *board) metrics() boardMetrics {
 		accentW: walk.IntFrom96DPI(4, dpi),
 		priceW:  walk.IntFrom96DPI(168, dpi),
 		gap:     walk.IntFrom96DPI(8, dpi),
-		rowH:    b.rowH(),
+		rowH:    walk.IntFrom96DPI(rowHeight96, dpi),
 	}
 }
 
@@ -226,13 +251,15 @@ func (m boardMetrics) chartRect(row walk.Rectangle) walk.Rectangle {
 	}
 }
 
-func (b *board) paintNodePrice(canvas *walk.Canvas, chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) {
+// nodePriceBox — место для ценника узла: над точкой, а если сверху не
+// влезает — под ней. Рамка подгоняется по размеру самого текста.
+func (b *board) nodePriceBox(canvas *walk.Canvas, chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) (walk.Rectangle, bool) {
 	if price == "" || b.metaFont == nil {
-		return
+		return walk.Rectangle{}, false
 	}
 	sz := measureLine(canvas, b.metaFont, price)
 	if sz.Width < 1 {
-		return
+		return walk.Rectangle{}, false
 	}
 	gap := walk.IntFrom96DPI(4, m.dpi)
 	lx := p.X - sz.Width/2
@@ -246,17 +273,15 @@ func (b *board) paintNodePrice(canvas *walk.Canvas, chart walk.Rectangle, p walk
 	if lx+sz.Width > chart.X+chart.Width {
 		lx = chart.X + chart.Width - sz.Width
 	}
-	_ = canvas.DrawTextPixels(price, b.metaFont, walk.RGB(226, 182, 87), walk.Rectangle{
-		X: lx, Y: ly, Width: sz.Width, Height: sz.Height,
-	}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextNoPrefix)
+	return walk.Rectangle{X: lx, Y: ly, Width: sz.Width, Height: sz.Height}, true
 }
 
-func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetrics) {
-	if b.tipItem < 0 || b.tipItem >= len(b.items) || b.tipNode < 0 {
+func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetrics, geom *tipGeom) {
+	if geom == nil || b.tipItem < 0 || b.tipItem >= len(b.items) || b.tipNode < 0 {
 		return
 	}
 	item := b.items[b.tipItem]
-	if b.tipNode >= len(item.Samples) {
+	if b.tipNode >= len(item.Samples) || b.tipNode >= len(geom.pts) {
 		return
 	}
 	sample := item.Samples[b.tipNode]
@@ -265,14 +290,8 @@ func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetr
 	if date == "" && price == "" {
 		return
 	}
-	pts := sparkline(m.chartRect(m.rowRect(bounds.Width, 0)).Width, m.chartH, item.Points)
-	if b.tipNode >= len(pts) {
-		return
-	}
-	y := b.tipItem*m.rowH - b.scroll
-	chart := m.chartRect(m.rowRect(bounds.Width, y))
-	nx := chart.X + pts[b.tipNode].X
-	ny := chart.Y + pts[b.tipNode].Y
+	nx := geom.pts[b.tipNode].X
+	ny := geom.pts[b.tipNode].Y
 
 	dateSz := measureLine(canvas, b.metaFont, date)
 	priceSz := measureLine(canvas, b.priceFont, price)
@@ -381,6 +400,12 @@ func (b *board) attach(w *walk.CustomWidget) {
 		} else {
 			b.scroll += step
 		}
+		b.clampScroll()
+		w.Invalidate()
+	})
+	// Иначе после растягивания окна под последней строкой остаётся пустота:
+	// прокрутка упирается в старый предел до первого движения колеса.
+	w.SizeChanged().Attach(func() {
 		b.clampScroll()
 		w.Invalidate()
 	})

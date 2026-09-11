@@ -47,8 +47,6 @@ func (p Product) Title() string {
 
 // Tracked — подписка пользователя вместе с последней известной ценой.
 type Tracked struct {
-	SubscriptionID   int64
-	ThresholdPct     float64
 	Product          Product
 	LastPriceKopecks sql.NullInt64
 	LastCheckedAt    sql.NullString
@@ -178,8 +176,7 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 // ListSubscriptions возвращает активные подписки пользователя.
 func (s *Store) ListSubscriptions(ctx context.Context, chatID int64) ([]Tracked, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.threshold_pct,
-		       p.id, p.site, p.external_key, p.url, p.name, p.city,
+		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city,
 		       last.price_kopecks, last.checked_at
 		FROM subscriptions s
 		JOIN users u ON u.id = s.user_id
@@ -199,7 +196,7 @@ func (s *Store) ListSubscriptions(ctx context.Context, chatID int64) ([]Tracked,
 	var out []Tracked
 	for rows.Next() {
 		var t Tracked
-		if err := rows.Scan(&t.SubscriptionID, &t.ThresholdPct,
+		if err := rows.Scan(
 			&t.Product.ID, &t.Product.Site, &t.Product.ExternalKey,
 			&t.Product.URL, &t.Product.Name, &t.Product.City,
 			&t.LastPriceKopecks, &t.LastCheckedAt); err != nil {

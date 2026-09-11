@@ -10,7 +10,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
@@ -62,7 +64,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	// closeStore вызывается после остановки трекера: иначе последний замер
+	// цикла пишется в уже закрытую базу и молча теряется.
+	closeStore := sync.OnceFunc(func() { _ = store.Close() })
+	defer closeStore()
 
 	bot, err := telegram.New(cfg, store, log)
 	if err != nil {
@@ -77,26 +82,15 @@ func run(log *slog.Logger) error {
 	})
 	defer browser.Close()
 
-	dns := fetch.NewDNS(fetch.DNSOptions{
+	shopOpt := fetch.ShopOptions{
 		Browser:         browser,
 		CircuitCooldown: cfg.CircuitCooldown,
 		Log:             log,
-	})
-	market := fetch.NewMarket(fetch.MarketOptions{
-		Browser:         browser,
-		CircuitCooldown: cfg.CircuitCooldown,
-		Log:             log,
-	})
-	ozon := fetch.NewOzon(fetch.OzonOptions{
-		Browser:         browser,
-		CircuitCooldown: cfg.CircuitCooldown,
-		Log:             log,
-	})
-
+	}
 	tr := tracker.New(store, map[string]tracker.Fetcher{
-		string(sites.DNS):          dns,
-		string(sites.YandexMarket): market,
-		string(sites.Ozon):         ozon,
+		string(sites.DNS):          fetch.NewDNS(shopOpt),
+		string(sites.YandexMarket): fetch.NewMarket(shopOpt),
+		string(sites.Ozon):         fetch.NewOzon(shopOpt),
 	}, bot, tracker.Config{
 		Interval:     cfg.CheckInterval,
 		FetchGap:     cfg.FetchGap,
@@ -107,6 +101,11 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	defer func() {
+		stop()
+		tr.Wait(10 * time.Second)
+		closeStore()
+	}()
 
 	go tr.Run(ctx)
 	if cfg.UIAddr != "" {

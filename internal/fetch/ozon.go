@@ -2,9 +2,6 @@ package fetch
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
@@ -38,97 +35,28 @@ const ozonExtractJS = `(function(){
 	};
 })()`
 
-// Ozon читает карточки через общий Chrome.
-type Ozon struct {
-	browser *Browser
-	owned   bool
-	log     *slog.Logger
-	breaker *Breaker
-}
-
-type OzonOptions struct {
-	Browser         *Browser
-	ProfileDir      string
-	ChromePath      string
-	Headless        bool
-	CircuitCooldown time.Duration
-	Log             *slog.Logger
-}
-
-func NewOzon(opt OzonOptions) *Ozon {
-	if opt.Log == nil {
-		opt.Log = slog.Default()
-	}
-	br := opt.Browser
-	owned := false
-	if br == nil {
-		br = NewBrowser(BrowserOptions{
-			ProfileDir: opt.ProfileDir,
-			ChromePath: opt.ChromePath,
-			Headless:   opt.Headless,
-			Log:        opt.Log,
-		})
-		owned = true
-	}
-	return &Ozon{
-		browser: br,
-		owned:   owned,
-		log:     opt.Log,
-		breaker: NewBreaker(opt.CircuitCooldown),
-	}
-}
-
-func (o *Ozon) Close() {
-	if o.owned && o.browser != nil {
-		o.browser.Close()
-	}
-}
-
-func (o *Ozon) Breaker() *Breaker { return o.breaker }
-
-func (o *Ozon) Fetch(_ context.Context, p storage.Product) (Snapshot, error) {
-	if !o.breaker.Allow() {
-		return Snapshot{}, fmt.Errorf("%w: пауза до %s (%s)",
-			ErrChallenge, o.breaker.RetryAt().Format(time.RFC3339), o.breaker.Reason())
-	}
-
-	var scrolled bool
-	actions := []chromedp.Action{
-		network.Enable(),
-		hideWebdriver(),
-		chromedp.Navigate(p.URL),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			return chromedp.Evaluate(`window.scrollTo(0, 480); true`, &scrolled).Do(ctx)
-		}),
-	}
-	snap, err := o.browser.do(ozonPageWait, actions, ozonExtractJS, parseOzonBits)
-	if err != nil {
-		o.maybeTrip(err)
-		if errors.Is(err, ErrChallenge) || errors.Is(err, ErrNoPrice) || errors.Is(err, context.DeadlineExceeded) {
-			return Snapshot{}, err
-		}
-		return Snapshot{}, fmt.Errorf("ozon: навигация %s: %w", p.URL, err)
-	}
-	return snap, nil
-}
-
-func (o *Ozon) maybeTrip(err error) {
-	if err == nil || isChromeStartError(err) {
-		return
-	}
-	// Челлендж Ozon часто проходит в том же окне Chrome. Не глушим весь
-	// магазин на CIRCUIT_COOLDOWN — иначе после ручного прохождения
-	// карточка не проверится ещё 45 минут.
-	if isBanError(err) {
-		o.breaker.Trip(err.Error())
-		o.log.Warn("ozon: предохранитель включён", "until", o.breaker.RetryAt(), "reason", err)
-	}
-}
-
-func (o *Ozon) Paused() (until time.Time, reason string, paused bool) {
-	if o.breaker.Allow() {
-		return time.Time{}, "", false
-	}
-	return o.breaker.RetryAt(), o.breaker.Reason(), true
+// NewOzon собирает загрузчик карточек ozon.ru.
+//
+// tripOnChallenge выключен: капча Ozon проходится в том же окне Chrome,
+// и после ручного прохождения карточка должна читаться сразу, а не через
+// CIRCUIT_COOLDOWN.
+func NewOzon(opt ShopOptions) *Shop {
+	return newShop(shopConfig{
+		site:      "ozon",
+		pageWait:  ozonPageWait,
+		extractJS: ozonExtractJS,
+		parse:     parseVisiblePriceBits,
+		actions: func(p storage.Product) []chromedp.Action {
+			var scrolled bool
+			return []chromedp.Action{
+				network.Enable(),
+				hideWebdriver(),
+				chromedp.Navigate(p.URL),
+				chromedp.WaitReady("body", chromedp.ByQuery),
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					return chromedp.Evaluate(`window.scrollTo(0, 480); true`, &scrolled).Do(ctx)
+				}),
+			}
+		},
+	}, opt)
 }

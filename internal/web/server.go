@@ -2,6 +2,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/base64"
@@ -9,12 +10,12 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+	"github.com/Msey/price-tracking-bot/internal/view"
 )
 
 //go:embed templates/index.html
@@ -103,11 +104,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildPage(reqs)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := pageTmpl.Execute(w, data); err != nil {
+	// Шаблон собирается в буфер: иначе сбой на середине отдал бы обрезанную
+	// страницу под кодом 200, а поправить заголовки было бы уже поздно.
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, buildPage(reqs)); err != nil {
 		s.log.Error("шаблон заявок", "error", err)
+		http.Error(w, "не удалось собрать страницу", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(buf.Bytes())
 }
 
 func buildPage(reqs []storage.Request) pageData {
@@ -121,43 +127,24 @@ func buildPage(reqs []storage.Request) pageData {
 	}
 	return pageData{
 		Total:         len(reqs),
-		TotalLabel:    ruPlural(len(reqs), "заявка", "заявки", "заявок"),
+		TotalLabel:    view.RuPlural(len(reqs), "заявка", "заявки", "заявок"),
 		Products:      len(products),
-		ProductsLabel: ruPlural(len(products), "товар", "товара", "товаров"),
+		ProductsLabel: view.RuPlural(len(products), "товар", "товара", "товаров"),
 		Users:         len(users),
-		UsersLabel:    ruPlural(len(users), "пользователь", "пользователя", "пользователей"),
+		UsersLabel:    view.RuPlural(len(users), "пользователь", "пользователя", "пользователей"),
 		Rows:          rows,
 	}
 }
 
-func ruPlural(n int, one, few, many string) string {
-	if n < 0 {
-		n = -n
-	}
-	mod100 := n % 100
-	mod10 := n % 10
-	if mod100 >= 11 && mod100 <= 14 {
-		return many
-	}
-	switch mod10 {
-	case 1:
-		return one
-	case 2, 3, 4:
-		return few
-	default:
-		return many
-	}
-}
-
 func viewOf(req storage.Request) rowView {
-	status, class := statusOf(req)
+	status, class := view.Status(req)
 	price := "—"
 	if req.LastPriceKopecks.Valid {
 		price = money.FormatKopecks(req.LastPriceKopecks.Int64)
 	}
 	checked := "ещё не было"
 	if req.LastCheckedAt.Valid && req.LastCheckedAt.String != "" {
-		checked = formatWhen(req.LastCheckedAt.String)
+		checked = view.FormatWhen(req.LastCheckedAt.String)
 	}
 	return rowView{
 		Title:       req.Product.Title(),
@@ -165,30 +152,14 @@ func viewOf(req storage.Request) rowView {
 		ExternalKey: req.Product.ExternalKey,
 		Site:        sites.Site(req.Product.Site).Title(),
 		SiteIcon:    siteIconDataURI(req.Product.Site),
-		City:        cityTitle(req.Product.City),
+		City:        view.CityTitle(req.Product.City),
 		Price:       price,
 		Status:      status,
 		StatusClass: class,
 		Checked:     checked,
 		ChatID:      req.ChatID,
-		Created:     formatWhen(req.CreatedAt),
+		Created:     view.FormatWhen(req.CreatedAt),
 	}
-}
-
-func statusOf(req storage.Request) (string, string) {
-	if !req.LastCheckedAt.Valid {
-		if req.LastErrorKind.Valid && req.LastErrorKind.String != "" {
-			return "ошибка загрузки", "bad"
-		}
-		return "ожидает проверку", "wait"
-	}
-	if req.LastErrorAt.Valid && req.LastErrorAt.String > req.LastCheckedAt.String {
-		return "ошибка после проверки", "bad"
-	}
-	if req.LastAvailable.Valid && req.LastAvailable.Int64 == 0 {
-		return "нет в наличии", "bad"
-	}
-	return "отслеживается", "ok"
 }
 
 func siteIconDataURI(site string) template.URL {
@@ -197,25 +168,4 @@ func siteIconDataURI(site string) template.URL {
 		return ""
 	}
 	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(raw))
-}
-
-func cityTitle(city string) string {
-	switch strings.ToLower(strings.TrimSpace(city)) {
-	case "moscow":
-		return "Москва"
-	default:
-		return city
-	}
-}
-
-func formatWhen(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "—"
-	}
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
-	if err != nil {
-		return raw
-	}
-	return t.Local().Format("02.01.2006 15:04")
 }

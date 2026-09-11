@@ -9,9 +9,9 @@ import (
 
 func TestParseHTMLJSONLD(t *testing.T) {
 	html := readFixture(t, "product.html")
-	snap, err := ParseHTML(html)
+	snap, err := parseDNSHTML(html)
 	if err != nil {
-		t.Fatalf("ParseHTML: %v", err)
+		t.Fatalf("parseDNSHTML: %v", err)
 	}
 	if snap.PriceKopecks != 15999900 {
 		t.Errorf("цена %d, ожидалось 15999900 (не кредитный «от 15 597»)", snap.PriceKopecks)
@@ -33,9 +33,9 @@ func TestParseHTMLIgnoresInstallment(t *testing.T) {
 			<div class="product-buy__price">12 345&nbsp;₽</div>
 			<div class="product-buy__sub">от 15 597&nbsp;₽/ мес.</div>
 		</div>`
-	snap, err := ParseHTML(html)
+	snap, err := parseDNSHTML(html)
 	if err != nil {
-		t.Fatalf("ParseHTML: %v", err)
+		t.Fatalf("parseDNSHTML: %v", err)
 	}
 	if snap.PriceKopecks != 1234500 {
 		t.Errorf("взяли не ту сумму: %d", snap.PriceKopecks)
@@ -44,14 +44,14 @@ func TestParseHTMLIgnoresInstallment(t *testing.T) {
 
 func TestParseHTMLChallenge(t *testing.T) {
 	html := `<html><script src="/__qrator/qauth_utm_v2d_v9118.js"></script></html>`
-	_, err := ParseHTML(html)
+	_, err := parseDNSHTML(html)
 	if !errors.Is(err, ErrChallenge) {
 		t.Fatalf("ожидался ErrChallenge, получено %v", err)
 	}
 }
 
 func TestParseHTMLNoPrice(t *testing.T) {
-	_, err := ParseHTML(`<html><div class="product-card">нет цены</div></html>`)
+	_, err := parseDNSHTML(`<html><div class="product-card">нет цены</div></html>`)
 	if !errors.Is(err, ErrNoPrice) {
 		t.Fatalf("ожидался ErrNoPrice, получено %v", err)
 	}
@@ -59,9 +59,9 @@ func TestParseHTMLNoPrice(t *testing.T) {
 
 func TestParseHTMLOutOfStock(t *testing.T) {
 	html := `<script type="application/ld+json">{"@type":"Product","name":"X","offers":{"@type":"Offer","price":1000,"priceCurrency":"RUB","availability":"https://schema.org/OutOfStock"}}</script>`
-	snap, err := ParseHTML(html)
+	snap, err := parseDNSHTML(html)
 	if err != nil {
-		t.Fatalf("ParseHTML: %v", err)
+		t.Fatalf("parseDNSHTML: %v", err)
 	}
 	if snap.Available {
 		t.Error("ожидался OutOfStock")
@@ -73,12 +73,37 @@ func TestParseHTMLOutOfStock(t *testing.T) {
 
 func TestParseHTMLPriceAsStringAndArrayOffers(t *testing.T) {
 	html := `<script type="application/ld+json">{"@type":"Product","name":"Y","offers":[{"price":"2499.00","priceCurrency":"RUB"}]}</script>`
-	snap, err := ParseHTML(html)
+	snap, err := parseDNSHTML(html)
 	if err != nil {
-		t.Fatalf("ParseHTML: %v", err)
+		t.Fatalf("parseDNSHTML: %v", err)
 	}
 	if snap.PriceKopecks != 249900 {
 		t.Errorf("цена %d", snap.PriceKopecks)
+	}
+}
+
+func TestParseDisplayedPrice(t *testing.T) {
+	ok := map[string]int64{
+		"159 999 ₽":      15999900,
+		"38\u00a0583 ₽":  3858300,
+		"421&nbsp;₽":     42100,
+		"от 1 990 ₽":     199000,
+		"1&#160;990 руб": 199000,
+	}
+	for in, want := range ok {
+		got, fine := parseDisplayedPrice(in)
+		if !fine || got != want {
+			t.Errorf("parseDisplayedPrice(%q) = %d, %v; ожидалось %d", in, got, fine, want)
+		}
+	}
+
+	// Две цены в одном узле склеивать нельзя: "1 999 ₽ 2 999 ₽" давало
+	// 19 992 999 ₽ — правдоподобное число, которое уходило подписчикам.
+	bad := []string{"1 999 ₽ 2 999 ₽", "116 900 38 583", "нет в наличии", "", "0 ₽", "2 000 000 000 ₽"}
+	for _, in := range bad {
+		if got, fine := parseDisplayedPrice(in); fine {
+			t.Errorf("parseDisplayedPrice(%q) = %d, ожидался отказ", in, got)
+		}
 	}
 }
 

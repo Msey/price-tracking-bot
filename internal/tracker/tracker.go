@@ -16,6 +16,7 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+	"github.com/Msey/price-tracking-bot/internal/view"
 )
 
 // Fetcher ходит за ценой. Реализация для магазинов — Chrome, для тестов — заглушка.
@@ -47,6 +48,7 @@ type Tracker struct {
 	busy     atomic.Bool
 	statusMu sync.Mutex
 	status   string
+	done     chan struct{}
 }
 
 func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
@@ -75,6 +77,19 @@ func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg
 		cfg:      cfg,
 		log:      log,
 		kick:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+	}
+}
+
+// Wait ждёт, пока Run домотает начатый цикл, но не дольше limit. Нужен перед
+// закрытием базы: иначе последний замер запишется в уже закрытую базу.
+func (t *Tracker) Wait(limit time.Duration) {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-t.done:
+	case <-timer.C:
+		t.log.Warn("трекер не успел остановиться", "limit", limit)
 	}
 }
 
@@ -121,6 +136,7 @@ func (t *Tracker) Busy() bool {
 // Run крутит циклы, пока жив контекст. Первый заход не сразу: после рестарта
 // не нужно немедленно открывать все карточки.
 func (t *Tracker) Run(ctx context.Context) {
+	defer close(t.done)
 	t.log.Info("трекер запущен",
 		"interval", t.cfg.Interval,
 		"gap", t.cfg.FetchGap,
@@ -134,8 +150,11 @@ func (t *Tracker) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		force := t.consumeKick()
 		t.busy.Store(true)
-		t.pending.Store(false)
 		if force {
+			// Флаг снимается только вместе с взятым из очереди запросом:
+			// иначе запрос, пришедший вплотную к началу цикла, потерял бы
+			// свой флаг и кнопка в окне на миг снова стала бы активной.
+			t.pending.Store(false)
 			t.log.Info("принудительная проверка всех товаров")
 			t.setStatus("Принудительная проверка всех товаров")
 			t.cycleAll(ctx)
@@ -193,49 +212,33 @@ func (t *Tracker) siteNames() []string {
 	return out
 }
 
+// cycle — обычный заход: берутся только товары, которым пора.
 func (t *Tracker) cycle(ctx context.Context) {
-	for _, site := range t.siteNames() {
-		if ctx.Err() != nil {
-			return
-		}
-		t.cycleSite(ctx, site)
-	}
+	t.cycleWith(ctx, func(ctx context.Context, site string) ([]storage.Product, error) {
+		return t.store.ProductsDue(ctx, site, time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
+	})
 }
 
-func (t *Tracker) cycleSite(ctx context.Context, site string) {
-	f := t.fetchers[site]
-	if f == nil {
-		return
-	}
-	if paused, ok := f.(interface {
-		Paused() (time.Time, string, bool)
-	}); ok {
-		if until, reason, on := paused.Paused(); on {
-			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
-			t.setStatus("Пропуск %s: предохранитель до %s", site, until.Local().Format("15:04"))
-			return
-		}
-	}
-
-	due, err := t.store.ProductsDue(ctx, site, time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
-	if err != nil {
-		t.log.Error("список товаров к проверке", "site", site, "error", err)
-		return
-	}
-	t.fetchList(ctx, site, due)
-}
-
+// cycleAll — заход по кнопке: все товары с активной подпиской, без оглядки
+// на то, когда их проверяли. lastHit сбрасывается, чтобы первый товар пошёл
+// сразу, а не после FETCH_GAP.
 func (t *Tracker) cycleAll(ctx context.Context) {
 	t.lastHit = time.Time{}
+	t.cycleWith(ctx, func(ctx context.Context, site string) ([]storage.Product, error) {
+		return t.store.ActiveProducts(ctx, site)
+	})
+}
+
+func (t *Tracker) cycleWith(ctx context.Context, list func(context.Context, string) ([]storage.Product, error)) {
 	for _, site := range t.siteNames() {
 		if ctx.Err() != nil {
 			return
 		}
-		t.cycleSiteAll(ctx, site)
+		t.cycleSite(ctx, site, list)
 	}
 }
 
-func (t *Tracker) cycleSiteAll(ctx context.Context, site string) {
+func (t *Tracker) cycleSite(ctx context.Context, site string, list func(context.Context, string) ([]storage.Product, error)) {
 	f := t.fetchers[site]
 	if f == nil {
 		return
@@ -250,9 +253,9 @@ func (t *Tracker) cycleSiteAll(ctx context.Context, site string) {
 		}
 	}
 
-	due, err := t.store.ActiveProducts(ctx, site)
+	due, err := list(ctx, site)
 	if err != nil {
-		t.log.Error("список товаров к полной проверке", "site", site, "error", err)
+		t.log.Error("список товаров к проверке", "site", site, "error", err)
 		return
 	}
 	t.fetchList(ctx, site, due)
@@ -370,7 +373,7 @@ func formatChange(p storage.Product, d Decision) string {
 
 	msg := fmt.Sprintf("%s Цена %s\n\n%s\nбыло %s\nстало %s\n%s %s (%s)",
 		arrow, verb,
-		fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(p.URL), html.EscapeString(p.Title())),
+		view.TelegramLink(p),
 		html.EscapeString(oldStr), html.EscapeString(newStr),
 		sign(diff), html.EscapeString(delta), html.EscapeString(pct),
 	)
@@ -418,10 +421,14 @@ func (t *Tracker) finishStatus(force bool) {
 
 func clipStatus(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len([]rune(s)) <= n {
+	if n <= 1 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return string([]rune(s)[:n-1]) + "…"
+	return string(r[:n-1]) + "…"
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

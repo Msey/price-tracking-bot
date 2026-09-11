@@ -3,6 +3,7 @@
 package gui
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,21 +12,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const comctlManifest = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="PriceTrackingBot" type="win32"/>
-  <dependency>
-    <dependentAssembly>
-      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
-    </dependentAssembly>
-  </dependency>
-  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
-    </windowsSettings>
-  </application>
-</assembly>
-`
+// Тот же манифест уходит в ресурс exe через rsrc, поэтому он лежит файлом.
+//
+//go:embed app.manifest
+var comctlManifest string
 
 var (
 	actOnce    sync.Once
@@ -54,6 +44,9 @@ func enableCommonControlsV6() error {
 			actErr = err
 			return
 		}
+		// CreateActCtxW читает манифест сразу, поэтому файл нужен только
+		// на время вызова: иначе %TEMP% копит каталог на каждый запуск.
+		defer os.RemoveAll(dir)
 		path := filepath.Join(dir, "app.manifest")
 		if err := os.WriteFile(path, []byte(comctlManifest), 0o644); err != nil {
 			actErr = err

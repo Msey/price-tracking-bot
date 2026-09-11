@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
+	"github.com/Msey/price-tracking-bot/internal/view"
 	"github.com/lxn/walk"
 	ui "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
@@ -62,11 +65,11 @@ func ActivateExisting() bool {
 	return false
 }
 
+// releaseInstance отпускает мьютекс единственного экземпляра. showEvent не
+// закрывается: на нём висит watchShowRequests, и закрытие дескриптора
+// из-под ожидающего потока — неопределённое поведение. Дескриптор
+// освободит сама система при выходе процесса, то есть ровно тогда же.
 func releaseInstance() {
-	if showEvent != 0 {
-		windows.CloseHandle(showEvent)
-		showEvent = 0
-	}
 	if instanceMu != 0 {
 		windows.CloseHandle(instanceMu)
 		instanceMu = 0
@@ -89,6 +92,14 @@ type app struct {
 	checkStatus func() string
 	checkBtn    *walk.PushButton
 	captchaTold bool
+	// closed — цикл сообщений уже вышел, слать в него работу больше нельзя.
+	closed atomic.Bool
+	// watching — сторож проверки уже запущен; второй не нужен, иначе каждый
+	// щелчок по пункту в трее добавлял бы ещё один опрос базы каждые 750 мс.
+	watching atomic.Bool
+	// loading — чтение базы уже идёт, второе в очередь не ставим.
+	loading  atomic.Bool
+	checkCtx context.Context
 }
 
 func Run(ctx context.Context, opt Options) error {
@@ -98,52 +109,76 @@ func Run(ctx context.Context, opt Options) error {
 	if err := enableCommonControlsV6(); err != nil {
 		opt.Log.Warn("не удалось включить Common Controls 6", "error", err)
 	}
+
+	// Кисти, шрифты, перья и иконка живут ровно столько, сколько окно.
+	// Их нужно освободить и на успешном выходе, и на любом раннем return,
+	// иначе каждая неудачная попытка запуска оставляет объекты GDI.
+	var owned []walk.Disposable
+	defer func() {
+		for i := len(owned) - 1; i >= 0; i-- {
+			owned[i].Dispose()
+		}
+	}()
+	keep := func(d walk.Disposable) { owned = append(owned, d) }
+	defer releaseInstance()
+
 	titleFont, err := walk.NewFont("Segoe UI", 12, walk.FontBold)
 	if err != nil {
 		return err
 	}
+	keep(titleFont)
 	metaFont, err := walk.NewFont("Segoe UI", 9, 0)
 	if err != nil {
 		return err
 	}
+	keep(metaFont)
 	priceFont, err := walk.NewFont("Segoe UI", 14, walk.FontBold)
 	if err != nil {
 		return err
 	}
+	keep(priceFont)
 
 	bg, err := walk.NewSolidColorBrush(walk.RGB(22, 20, 16))
 	if err != nil {
 		return err
 	}
+	keep(bg)
 	row, err := walk.NewSolidColorBrush(walk.RGB(33, 28, 22))
 	if err != nil {
 		return err
 	}
+	keep(row)
 	rowSel, err := walk.NewSolidColorBrush(walk.RGB(48, 40, 30))
 	if err != nil {
 		return err
 	}
+	keep(rowSel)
 	accent, err := walk.NewSolidColorBrush(walk.RGB(226, 182, 87))
 	if err != nil {
 		return err
 	}
+	keep(accent)
 	gridPen, err := walk.NewCosmeticPen(walk.PenSolid, walk.RGB(58, 50, 40))
 	if err != nil {
 		return err
 	}
+	keep(gridPen)
 	goldBrush, err := walk.NewSolidColorBrush(walk.RGB(226, 182, 87))
 	if err != nil {
 		return err
 	}
+	keep(goldBrush)
 	goldPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, goldBrush)
 	if err != nil {
 		return err
 	}
+	keep(goldPen)
 
 	icon, err := walk.NewIconFromImage(trayImage())
 	if err != nil {
 		return err
 	}
+	keep(icon)
 
 	a := &app{
 		store:       opt.Store,
@@ -180,7 +215,7 @@ func Run(ctx context.Context, opt Options) error {
 			continue
 		}
 		a.board.icons[string(site)] = bmp
-		defer bmp.Dispose()
+		keep(bmp)
 	}
 
 	muted := walk.RGB(154, 141, 122)
@@ -224,7 +259,6 @@ func Run(ctx context.Context, opt Options) error {
 			},
 		},
 	}).Create(); err != nil {
-		releaseInstance()
 		return err
 	}
 	a.board.attach(canvas)
@@ -249,9 +283,11 @@ func Run(ctx context.Context, opt Options) error {
 
 	ni, err := walk.NewNotifyIcon(a.mw)
 	if err != nil {
-		releaseInstance()
 		return err
 	}
+	// Иначе сбой при сборке меню оставил бы иконку висеть в трее.
+	// Dispose идемпотентен, поэтому явный вызов в quit остаётся рабочим.
+	keep(disposeFunc(func() { _ = ni.Dispose() }))
 	a.ni = ni
 	_ = ni.SetIcon(icon)
 	_ = ni.SetToolTip("Трекинг цен")
@@ -291,6 +327,7 @@ func Run(ctx context.Context, opt Options) error {
 	go a.watchCancel(ctx)
 	go a.poll(ctx)
 
+	a.checkCtx = ctx
 	a.refresh(false)
 	opt.Log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
 	if opt.StartHidden {
@@ -300,11 +337,14 @@ func Run(ctx context.Context, opt Options) error {
 		a.mw.Show()
 	}
 	a.mw.Run()
-
-	_ = ni.Dispose()
-	releaseInstance()
+	a.closed.Store(true)
 	return nil
 }
+
+// disposeFunc подгоняет под walk.Disposable то, чей Dispose возвращает ошибку.
+type disposeFunc func()
+
+func (f disposeFunc) Dispose() { f() }
 
 func addTrayAction(ni *walk.NotifyIcon, title string, fn func()) error {
 	act := walk.NewAction()
@@ -324,27 +364,56 @@ func (a *app) requestCheck() {
 	if a.status != nil {
 		_ = a.status.SetText("Запущена проверка всех цен. Таймер автоцикла сброшен.")
 	}
-	go a.watchCheck()
+	// Пункт в трее, в отличие от кнопки, не гаснет на время проверки,
+	// поэтому сторож заводится только один.
+	if a.watching.CompareAndSwap(false, true) {
+		go a.watchCheck()
+	}
 }
 
 func (a *app) watchCheck() {
+	defer a.watching.Store(false)
+
 	ticker := time.NewTicker(750 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.Now().Add(2 * time.Hour)
+	done := a.stopSignal()
+	deadline := time.NewTimer(2 * time.Hour)
+	defer deadline.Stop()
 	for {
-		if a.mw == nil || time.Now().After(deadline) {
+		if a.closed.Load() {
 			return
 		}
 		busy := a.checkRunning()
-		a.mw.Synchronize(func() {
-			a.updateCheckUI()
-			a.refresh(true)
-		})
+		a.onUI(a.updateCheckUI)
+		a.refresh(true)
 		if !busy {
 			return
 		}
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-done:
+			return
+		case <-deadline.C:
+			return
+		}
 	}
+}
+
+// stopSignal — канал, который закрывается при остановке приложения.
+func (a *app) stopSignal() <-chan struct{} {
+	if a.checkCtx == nil {
+		return nil
+	}
+	return a.checkCtx.Done()
+}
+
+// onUI переносит работу в поток окна. После выхода из цикла сообщений
+// очередь Synchronize уже никто не разбирает, поэтому туда не пишем.
+func (a *app) onUI(fn func()) {
+	if a.mw == nil || a.closed.Load() {
+		return
+	}
+	a.mw.Synchronize(fn)
 }
 
 func (a *app) checkRunning() bool {
@@ -392,10 +461,7 @@ func (a *app) hideToTray() {
 }
 
 func (a *app) showWindow() {
-	if a.mw == nil {
-		return
-	}
-	a.mw.Synchronize(func() {
+	a.onUI(func() {
 		a.mw.Show()
 		win.ShowWindow(a.mw.Handle(), win.SW_RESTORE)
 		win.SetForegroundWindow(a.mw.Handle())
@@ -405,6 +471,7 @@ func (a *app) showWindow() {
 
 func (a *app) quit() {
 	a.allowQuit = true
+	a.closed.Store(true)
 	if a.ni != nil {
 		_ = a.ni.Dispose()
 	}
@@ -413,10 +480,7 @@ func (a *app) quit() {
 
 func (a *app) watchCancel(ctx context.Context) {
 	<-ctx.Done()
-	if a.mw == nil {
-		return
-	}
-	a.mw.Synchronize(a.quit)
+	a.onUI(a.quit)
 }
 
 func (a *app) watchShowRequests() {
@@ -440,12 +504,8 @@ func (a *app) poll(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if a.mw != nil {
-				a.mw.Synchronize(func() {
-					a.updateCheckUI()
-					a.refresh(true)
-				})
-			}
+			a.onUI(a.updateCheckUI)
+			a.refresh(true)
 			d := 10 * time.Second
 			if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
 				d = 4 * time.Second
@@ -455,13 +515,26 @@ func (a *app) poll(ctx context.Context) {
 	}
 }
 
+// refresh перечитывает базу и обновляет окно. Чтение уходит в отдельную
+// горутину: запрос может занять до пяти секунд, и делать его в потоке окна
+// значит подвесить интерфейс на всё это время.
 func (a *app) refresh(notify bool) {
-	if a.store == nil {
+	if a.store == nil || a.closed.Load() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	items, err := loadItems(ctx, a.store)
+	if !a.loading.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.loading.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		items, err := loadItems(ctx, a.store)
+		a.onUI(func() { a.apply(items, err, notify) })
+	}()
+}
+
+func (a *app) apply(items []Item, err error, notify bool) {
 	if err != nil {
 		a.log.Error("список товаров для окна", "error", err)
 		if a.status != nil {
@@ -470,12 +543,8 @@ func (a *app) refresh(notify bool) {
 		return
 	}
 	if a.loaded && notify && a.ni != nil {
-		for _, it := range newProducts(a.items, items) {
-			_ = a.ni.ShowInfo("Новая ссылка", clip(it.Title, 120))
-		}
-		for _, msg := range priceChanges(a.items, items) {
-			_ = a.ni.ShowInfo("Цена изменилась", clip(msg, 180))
-		}
+		a.announce("Новая ссылка", titlesOf(newProducts(a.items, items)), 120)
+		a.announce("Цена изменилась", priceChanges(a.items, items), 180)
 	}
 	a.items = items
 	if a.board != nil {
@@ -489,17 +558,42 @@ func (a *app) refresh(notify bool) {
 			a.noteCaptcha(msg)
 		} else if a.checkRunning() {
 			_ = a.status.SetText("Идёт проверка цен · " +
-				fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
+				fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
 				" · автоцикл начнётся заново после неё")
 		} else {
 			_ = a.status.SetText("Работает в фоне · " +
-				fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
+				fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
 				" в списке · закрытие окна прячет в трей")
 		}
 	}
 	if a.ni != nil {
-		_ = a.ni.SetToolTip("Трекинг цен · " + ruPlural(len(items), "товар", "товара", "товаров"))
+		_ = a.ni.SetToolTip("Трекинг цен · " + view.RuPlural(len(items), "товар", "товара", "товаров"))
 	}
+}
+
+// maxBalloons — сколько всплывающих подсказок показать за один заход.
+// Полная проверка может сдвинуть десятки цен, и каждая подсказка висит
+// около десяти секунд: без предела они забьют угол экрана на минуты.
+const maxBalloons = 3
+
+func (a *app) announce(title string, lines []string, limit int) {
+	for i, line := range lines {
+		if i == maxBalloons {
+			rest := len(lines) - maxBalloons
+			_ = a.ni.ShowInfo(title, fmt.Sprintf("и ещё %d %s", rest,
+				view.RuPlural(rest, "изменение", "изменения", "изменений")))
+			return
+		}
+		_ = a.ni.ShowInfo(title, clip(line, limit))
+	}
+}
+
+func titlesOf(items []Item) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.Title)
+	}
+	return out
 }
 
 func (a *app) openDataFolder() {
@@ -511,7 +605,7 @@ func (a *app) openDataFolder() {
 	if err != nil {
 		return
 	}
-	_ = exec.Command("explorer", filepath.Dir(abs)).Start()
+	_ = exec.Command(systemExe("explorer.exe"), filepath.Dir(abs)).Start()
 }
 
 func openURL(raw string) {
@@ -519,7 +613,17 @@ func openURL(raw string) {
 	if raw == "" {
 		return
 	}
-	_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", raw).Start()
+	_ = exec.Command(systemExe(`System32\rundll32.exe`), "url.dll,FileProtocolHandler", raw).Start()
+}
+
+// systemExe собирает путь от %SystemRoot%, а не ищет программу в PATH:
+// иначе запись в любой каталог из PATH даёт подмену запускаемой программы.
+func systemExe(rel string) string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(root, rel)
 }
 
 func clip(s string, n int) string {

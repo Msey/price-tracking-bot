@@ -12,13 +12,16 @@ func RubToKopecks(rub int64) int64 { return rub * 100 }
 
 // FormatKopecks печатает цену с разделением разрядов: 15999900 -> "159 999 ₽".
 func FormatKopecks(kopecks int64) string {
+	var sb strings.Builder
+	// Отрицательная цена — признак сбоя разбора. Печатаем со знаком, а не
+	// подменяем нулём: молчаливый «0 ₽» выглядит как настоящая цена.
 	if kopecks < 0 {
-		return "0\u00a0₽"
+		sb.WriteString("−")
+		kopecks = -kopecks
 	}
 	whole := kopecks / 100
 	digits := strconv.FormatInt(whole, 10)
 
-	var sb strings.Builder
 	for i, d := range digits {
 		if i > 0 && (len(digits)-i)%3 == 0 {
 			sb.WriteString("\u00a0")

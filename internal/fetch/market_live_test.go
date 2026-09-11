@@ -21,7 +21,7 @@ func TestLiveMarketFetch(t *testing.T) {
 		t.Skip("нет Chrome")
 	}
 
-	m := NewMarket(MarketOptions{
+	m := NewMarket(ShopOptions{
 		ProfileDir:      filepath.Join(t.TempDir(), "profile"),
 		ChromePath:      chrome,
 		Headless:        false,

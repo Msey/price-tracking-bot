@@ -38,25 +38,10 @@ type pageBits struct {
 }
 
 var (
-	ldJSONRe           = regexp.MustCompile(`(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
-	divRe              = regexp.MustCompile(`(?is)<div\s+([^>]+)>([^<]*)</div>`)
-	classRe            = regexp.MustCompile(`(?i)class=["']([^"']+)["']`)
-	marketPriceInnerRe = regexp.MustCompile(`(?is)data-auto=["']snippet-price-current["'][^>]*>\s*<span[^>]*>\s*([^<]+?)\s*<`)
-	ozonHeadlineRe     = regexp.MustCompile(`(?is)class=["'][^"']*\btsHeadline600Large\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
-	h1Re               = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
-	tagRe              = regexp.MustCompile(`(?s)<[^>]+>`)
-	shopTitleCutovers  = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon"}
+	// Цена в узле страницы: одна группа цифр, разряды могут быть разделены пробелами.
+	priceRunRe        = regexp.MustCompile(`[0-9][0-9 ]*`)
+	shopTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon"}
 )
-
-// ParseHTML разбирает HTML карточки. Сети нет.
-func ParseHTML(html string) (Snapshot, error) {
-	return parseBits(pageBits{
-		QRATOR:   isChallenge(html),
-		LDJSON:   extractLDJSON(html),
-		CSSPrice: extractClassText(html, "product-buy__price"),
-		Title:    "",
-	})
-}
 
 func botWall(p pageBits) bool {
 	return p.QRATOR || p.Challenge
@@ -88,12 +73,6 @@ func parseBits(p pageBits) (Snapshot, error) {
 	return snap, nil
 }
 
-func isChallenge(html string) bool {
-	return strings.Contains(html, "/__qrator/") ||
-		strings.Contains(html, "qauth_handle_validate") ||
-		strings.Contains(html, "qrator_jsr")
-}
-
 func hardBlocked(p pageBits) bool {
 	t := strings.ToLower(strings.TrimSpace(p.Title))
 	return strings.Contains(t, "403") || strings.Contains(t, "401") ||
@@ -106,40 +85,6 @@ func needsHuman(p pageBits, parseErr error) bool {
 		return true
 	}
 	return errors.Is(parseErr, ErrChallenge)
-}
-
-func extractLDJSON(html string) []string {
-	matches := ldJSONRe.FindAllStringSubmatch(html, -1)
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		body := strings.TrimSpace(m[1])
-		body = strings.TrimPrefix(body, "<!--")
-		body = strings.TrimSuffix(body, "-->")
-		out = append(out, strings.TrimSpace(body))
-	}
-	return out
-}
-
-func extractClassText(html, className string) string {
-	for _, m := range divRe.FindAllStringSubmatch(html, -1) {
-		classAttr := ""
-		if cm := classRe.FindStringSubmatch(m[1]); len(cm) == 2 {
-			classAttr = cm[1]
-		}
-		if hasClass(classAttr, className) {
-			return strings.TrimSpace(m[2])
-		}
-	}
-	return ""
-}
-
-func hasClass(attr, name string) bool {
-	for _, c := range strings.Fields(attr) {
-		if c == name {
-			return true
-		}
-	}
-	return false
 }
 
 type ldNode struct {
@@ -248,20 +193,19 @@ func priceToKopecks(n json.Number) (int64, error) {
 	return int64(math.Round(f * 100)), nil
 }
 
+// parseDisplayedPrice читает цену из текста узла. Берётся первая группа цифр,
+// а если в узле их две (зачёркнутая цена рядом с текущей) — цена не читается:
+// склеивать их в одно число нельзя, иначе подписчик получит выдуманную цену.
 func parseDisplayedPrice(s string) (int64, bool) {
 	s = strings.ReplaceAll(s, "&nbsp;", " ")
 	s = strings.ReplaceAll(s, "&#160;", " ")
 	s = strings.ReplaceAll(s, "\u00a0", " ")
-	var digits strings.Builder
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
-		}
-	}
-	if digits.Len() == 0 {
+	runs := priceRunRe.FindAllString(s, 2)
+	if len(runs) != 1 {
 		return 0, false
 	}
-	rub, err := strconv.ParseInt(digits.String(), 10, 64)
+	digits := strings.ReplaceAll(strings.TrimSpace(runs[0]), " ", "")
+	rub, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil || rub <= 0 || rub > 1e9 {
 		return 0, false
 	}
@@ -286,34 +230,8 @@ func defaultCurrency(c string) string {
 	return strings.ToUpper(c)
 }
 
-// ParseMarketHTML разбирает HTML карточки Яндекс.Маркета. Сети нет.
-func ParseMarketHTML(html string) (Snapshot, error) {
-	return parseVisiblePriceBits(pageBits{
-		Challenge: isMarketChallenge(html),
-		LDJSON:    extractLDJSON(html),
-		CSSPrice:  extractMarketPriceText(html),
-		Name:      extractH1(html),
-	})
-}
-
-// ParseOzonHTML разбирает HTML карточки Ozon. Сети нет.
-func ParseOzonHTML(html string) (Snapshot, error) {
-	return parseVisiblePriceBits(pageBits{
-		Challenge: isOzonChallenge(html),
-		LDJSON:    extractLDJSON(html),
-		CSSPrice:  extractOzonPriceText(html),
-		Name:      extractH1(html),
-	})
-}
-
-func parseMarketBits(p pageBits) (Snapshot, error) {
-	return parseVisiblePriceBits(p)
-}
-
-func parseOzonBits(p pageBits) (Snapshot, error) {
-	return parseVisiblePriceBits(p)
-}
-
+// parseVisiblePriceBits читает цену Маркета и Ozon: там верна та цена,
+// что видна в карточке, а JSON-LD идёт только запасным вариантом.
 func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 	if hardBlocked(p) {
 		return Snapshot{}, ErrChallenge
@@ -346,68 +264,6 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 		return Snapshot{}, ErrChallenge
 	}
 	return Snapshot{}, ErrNoPrice
-}
-
-func isMarketChallenge(html string) bool {
-	h := strings.ToLower(html)
-	return strings.Contains(h, "smartcaptcha") ||
-		strings.Contains(h, "showcaptcha") ||
-		strings.Contains(h, "checkboxcaptcha") ||
-		strings.Contains(h, "are you not a robot") ||
-		strings.Contains(h, "confirm that you are not a robot")
-}
-
-func extractMarketPriceText(html string) string {
-	if m := marketPriceInnerRe.FindStringSubmatch(html); len(m) == 2 {
-		return strings.TrimSpace(m[1])
-	}
-	return ""
-}
-
-func extractOzonPriceText(html string) string {
-	const marker = `data-widget="webPrice"`
-	if i := strings.Index(html, marker); i >= 0 {
-		window := html[i:]
-		if len(window) > 4000 {
-			window = window[:4000]
-		}
-		if m := ozonHeadlineRe.FindStringSubmatch(window); len(m) == 2 {
-			return strings.TrimSpace(m[1])
-		}
-	}
-	if i := strings.Index(html, `data-widget='webPrice'`); i >= 0 {
-		window := html[i:]
-		if len(window) > 4000 {
-			window = window[:4000]
-		}
-		if m := ozonHeadlineRe.FindStringSubmatch(window); len(m) == 2 {
-			return strings.TrimSpace(m[1])
-		}
-	}
-	if m := ozonHeadlineRe.FindStringSubmatch(html); len(m) == 2 {
-		return strings.TrimSpace(m[1])
-	}
-	return ""
-}
-
-func isOzonChallenge(html string) bool {
-	h := strings.ToLower(html)
-	return strings.Contains(h, "px-captcha") ||
-		strings.Contains(h, "perimeterx") ||
-		strings.Contains(h, "antibot challenge") ||
-		strings.Contains(h, "access denied")
-}
-
-func extractH1(html string) string {
-	m := h1Re.FindStringSubmatch(html)
-	if m == nil {
-		return ""
-	}
-	return strings.Join(strings.Fields(tagRe.ReplaceAllString(m[1], " ")), " ")
-}
-
-func cleanMarketName(h1, title string) string {
-	return cleanShopName(h1, title)
 }
 
 func cleanShopName(h1, title string) string {

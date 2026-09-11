@@ -26,7 +26,7 @@ func TestLiveOzonFetch(t *testing.T) {
 		profile = filepath.Join(t.TempDir(), "profile")
 	}
 
-	o := NewOzon(OzonOptions{
+	o := NewOzon(ShopOptions{
 		ProfileDir:      profile,
 		ChromePath:      chrome,
 		Headless:        false,

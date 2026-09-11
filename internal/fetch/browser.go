@@ -31,7 +31,9 @@ type Browser struct {
 
 type chromeUI struct {
 	reveal func(context.Context) error
-	hide   func(context.Context) error
+	// hide сворачивает окно по своему контексту: прятать Chrome нужно и после
+	// того, как время на капчу вышло и контекст страницы уже погас.
+	hide   func() error
 	notify func(pageBits)
 }
 
@@ -85,26 +87,38 @@ func (b *Browser) stopLocked() {
 	b.browser = nil
 }
 
-func (b *Browser) do(timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
+func (b *Browser) do(ctx context.Context, timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	snap, err := b.doLocked(timeout, setup, extractJS, parse)
-	if err != nil && isChromeStartError(err) {
+	snap, err := b.doLocked(ctx, timeout, setup, extractJS, parse)
+	if err != nil && isChromeStartError(err) && ctx.Err() == nil {
 		b.log.Warn("chrome перезапуск после сбоя", "error", err)
 		b.stopLocked()
-		return b.doLocked(timeout, setup, extractJS, parse)
+		return b.doLocked(ctx, timeout, setup, extractJS, parse)
 	}
 	return snap, err
 }
 
-func (b *Browser) doLocked(timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
+func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
 	if err := b.ensureLocked(); err != nil {
 		return Snapshot{}, err
 	}
 
 	runCtx, cancel := context.WithTimeout(b.browser, timeout+captchaWait+15*time.Second)
 	defer cancel()
+	// Контекст страницы растёт из контекста Chrome, а не из ctx вызывающего:
+	// иначе выход из приложения убил бы весь браузер. Отмену пробрасываем
+	// сторожем, чтобы остановка бота не ждала всю страницу с капчей.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel()
+		case <-watchDone:
+		}
+	}()
 
 	if err := chromedp.Run(runCtx, setup...); err != nil {
 		return Snapshot{}, err
@@ -114,7 +128,14 @@ func (b *Browser) doLocked(timeout time.Duration, setup []chromedp.Action, extra
 
 func (b *Browser) ensureLocked() error {
 	if b.browser != nil {
-		return nil
+		if b.browser.Err() == nil {
+			return nil
+		}
+		// Chrome упал или пользователь закрыл окно, в котором проходил капчу.
+		// chromedp гасит контекст навсегда, поэтому браузер нужно поднять
+		// заново — иначе все проверки молча падают до перезапуска бота.
+		b.log.Warn("chrome отключился, поднимаем заново", "error", b.browser.Err())
+		b.stopLocked()
 	}
 	if b.profileDir != "" {
 		if err := os.MkdirAll(b.profileDir, 0o755); err != nil {
@@ -166,7 +187,12 @@ func (b *Browser) ui() *chromeUI {
 		reveal: func(ctx context.Context) error {
 			return chromedp.Run(ctx, showChromeWindow())
 		},
-		hide: func(ctx context.Context) error {
+		hide: func() error {
+			if b.browser == nil || b.browser.Err() != nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(b.browser, 5*time.Second)
+			defer cancel()
 			return chromedp.Run(ctx, minimizeChromeWindow())
 		},
 		notify: b.noteChallenge,

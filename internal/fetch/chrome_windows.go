@@ -3,11 +3,22 @@
 package fetch
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 )
+
+// powershellPath — полный путь из %SystemRoot%, а не поиск по PATH: иначе
+// запись в любой каталог из PATH выше System32 даёт запуск чужого кода.
+func powershellPath() string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+}
 
 func killChromeWithProfile(profile string) {
 	abs, err := filepath.Abs(profile)
@@ -23,7 +34,7 @@ Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | ForEach-Object {
   }
 }
 `
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd := exec.Command(powershellPath(), "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	_ = cmd.Run()
 }

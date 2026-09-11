@@ -102,7 +102,7 @@ func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string
 		return fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
 	}
 	if name != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE products SET name = ? WHERE id = ? AND (name = '' OR name != ?)`, name, productID, name); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE products SET name = ? WHERE id = ? AND name != ?`, name, productID, name); err != nil {
 			return fmt.Errorf("storage: имя товара %d: %w", productID, err)
 		}
 	}
