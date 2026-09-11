@@ -13,33 +13,35 @@ import (
 const rowHeight96 = 74 // компактная строка: в окне видно примерно вдвое больше товаров
 
 type board struct {
-	widget     *walk.CustomWidget
-	items      []Item
-	scroll     int
-	hover      int
-	tipItem    int
-	tipNode    int
-	lastClick  time.Time
-	lastIdx    int
-	titleFont  *walk.Font
-	metaFont   *walk.Font
-	priceFont  *walk.Font
-	bg         *walk.SolidColorBrush
-	row        *walk.SolidColorBrush
-	rowHot     *walk.SolidColorBrush
-	accent     *walk.SolidColorBrush
-	upBrush    *walk.SolidColorBrush
-	downBrush  *walk.SolidColorBrush
-	goldPen    walk.Pen
-	upPen      walk.Pen
-	downPen    walk.Pen
-	gridPen    walk.Pen
-	icons      map[string]walk.Image
-	trash      walk.Image
-	trashHot   walk.Image
-	onOpen     func(Item)
-	onDelete   func(Item)
-	hoverTrash bool
+	widget       *walk.CustomWidget
+	items        []Item
+	scroll       int
+	hover        int
+	tipItem      int
+	tipNode      int
+	lastClick    time.Time
+	lastIdx      int
+	titleFont    *walk.Font
+	metaFont     *walk.Font
+	priceFont    *walk.Font
+	tipFont      *walk.Font
+	tipPriceFont *walk.Font
+	bg           *walk.SolidColorBrush
+	row          *walk.SolidColorBrush
+	rowHot       *walk.SolidColorBrush
+	accent       *walk.SolidColorBrush
+	upBrush      *walk.SolidColorBrush
+	downBrush    *walk.SolidColorBrush
+	goldPen      walk.Pen
+	upPen        walk.Pen
+	downPen      walk.Pen
+	gridPen      walk.Pen
+	icons        map[string]walk.Image
+	trash        walk.Image
+	trashHot     walk.Image
+	onOpen       func(Item)
+	onDelete     func(Item)
+	hoverTrash   bool
 }
 
 func (b *board) setItems(next []Item) {
@@ -355,13 +357,21 @@ func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetr
 	nx := geom.pts[b.tipNode].X
 	ny := geom.pts[b.tipNode].Y
 
-	dateSz := measureLine(canvas, b.metaFont, date)
-	priceSz := measureLine(canvas, b.priceFont, price)
-	if b.priceFont == nil {
-		priceSz = measureLine(canvas, b.metaFont, price)
+	dateFont := b.tipFont
+	if dateFont == nil {
+		dateFont = b.metaFont
 	}
-	lineGap := walk.IntFrom96DPI(2, m.dpi)
-	boxPad := walk.IntFrom96DPI(8, m.dpi)
+	priceFont := b.tipPriceFont
+	if priceFont == nil {
+		priceFont = b.priceFont
+	}
+	if priceFont == nil {
+		priceFont = dateFont
+	}
+	dateSz := measureLine(canvas, dateFont, date)
+	priceSz := measureLine(canvas, priceFont, price)
+	lineGap := walk.IntFrom96DPI(1, m.dpi)
+	boxPad := walk.IntFrom96DPI(4, m.dpi)
 	innerW := dateSz.Width
 	if priceSz.Width > innerW {
 		innerW = priceSz.Width
@@ -370,7 +380,7 @@ func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetr
 	tw := innerW + boxPad*2
 	th := innerH + boxPad*2
 	tx := nx - tw/2
-	ty := ny - th - walk.IntFrom96DPI(10, m.dpi)
+	ty := ny - th - walk.IntFrom96DPI(5, m.dpi)
 	if tx < bounds.X+2 {
 		tx = bounds.X + 2
 	}
@@ -378,7 +388,7 @@ func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetr
 		tx = bounds.X + bounds.Width - 2 - tw
 	}
 	if ty < bounds.Y+2 {
-		ty = ny + walk.IntFrom96DPI(12, m.dpi)
+		ty = ny + walk.IntFrom96DPI(6, m.dpi)
 	}
 	tip := walk.Rectangle{X: tx, Y: ty, Width: tw, Height: th}
 	fill := b.rowHot
@@ -395,11 +405,7 @@ func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetr
 	gold := walk.RGB(226, 182, 87)
 	dateBox := walk.Rectangle{X: tip.X + boxPad, Y: tip.Y + boxPad, Width: innerW, Height: dateSz.Height}
 	priceBox := walk.Rectangle{X: tip.X + boxPad, Y: dateBox.Y + dateSz.Height + lineGap, Width: innerW, Height: priceSz.Height}
-	_ = canvas.DrawTextPixels(date, b.metaFont, textClr, dateBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-	priceFont := b.priceFont
-	if priceFont == nil {
-		priceFont = b.metaFont
-	}
+	_ = canvas.DrawTextPixels(date, dateFont, textClr, dateBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
 	_ = canvas.DrawTextPixels(price, priceFont, gold, priceBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
 }
 

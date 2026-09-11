@@ -142,6 +142,16 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(priceFont)
+	tipFont, err := walk.NewFont("Segoe UI", 6, 0)
+	if err != nil {
+		return err
+	}
+	keep(tipFont)
+	tipPriceFont, err := walk.NewFont("Segoe UI", 6, walk.FontBold)
+	if err != nil {
+		return err
+	}
+	keep(tipPriceFont)
 
 	bg, err := walk.NewSolidColorBrush(walk.RGB(22, 20, 16))
 	if err != nil {
@@ -215,22 +225,24 @@ func Run(ctx context.Context, opt Options) error {
 		logEnabled:    opt.LogEnabled,
 		setLogEnabled: opt.SetLogEnabled,
 		board: &board{
-			titleFont: titleFont,
-			metaFont:  metaFont,
-			priceFont: priceFont,
-			bg:        bg,
-			row:       row,
-			rowHot:    rowSel,
-			accent:    accent,
-			upBrush:   upBrush,
-			downBrush: downBrush,
-			goldPen:   goldPen,
-			upPen:     upPen,
-			downPen:   downPen,
-			gridPen:   gridPen,
-			hover:     -1,
-			tipItem:   -1,
-			tipNode:   -1,
+			titleFont:    titleFont,
+			metaFont:     metaFont,
+			priceFont:    priceFont,
+			tipFont:      tipFont,
+			tipPriceFont: tipPriceFont,
+			bg:           bg,
+			row:          row,
+			rowHot:       rowSel,
+			accent:       accent,
+			upBrush:      upBrush,
+			downBrush:    downBrush,
+			goldPen:      goldPen,
+			upPen:        upPen,
+			downPen:      downPen,
+			gridPen:      gridPen,
+			hover:        -1,
+			tipItem:      -1,
+			tipNode:      -1,
 		},
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
