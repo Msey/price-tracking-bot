@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -14,15 +12,16 @@ import (
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/fetch"
-	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
 )
 
-// Fetcher ходит за ценой. Реализация для магазинов — Chrome, для тестов — заглушка.
+// Fetcher ходит за ценой. Paused — предохранитель магазина: без него
+// заглушка в тесте молча расходится с живым Shop.
 type Fetcher interface {
 	Fetch(ctx context.Context, p storage.Product) (fetch.Snapshot, error)
+	Paused() (until time.Time, reason string, on bool)
 }
 
 // Notifier шлёт HTML в Telegram.
@@ -284,14 +283,10 @@ func (t *Tracker) cycleSite(ctx context.Context, site string, skipGap bool, list
 	if f == nil {
 		return
 	}
-	if paused, ok := f.(interface {
-		Paused() (time.Time, string, bool)
-	}); ok {
-		if until, reason, on := paused.Paused(); on {
-			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
-			t.setStatus("Пропуск %s: предохранитель до %s", site, until.Local().Format("15:04"))
-			return
-		}
+	if until, reason, on := f.Paused(); on {
+		t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
+		t.setStatus("Пропуск %s: предохранитель до %s", site, until.Local().Format("15:04"))
+		return
 	}
 
 	due, err := list(ctx, site)
@@ -394,7 +389,7 @@ func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) e
 	if err != nil {
 		return err
 	}
-	msg := formatChange(p, d)
+	msg := view.PriceChange(p, d.Previous, d.Current)
 	var first error
 	for _, chatID := range chats {
 		t.log.Info("отправляю уведомление", "chat_id", chatID, "product", p.ID)
@@ -403,50 +398,6 @@ func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) e
 		}
 	}
 	return first
-}
-
-func formatChange(p storage.Product, d Decision) string {
-	oldP, newP := d.Previous.PriceKopecks, d.Current.PriceKopecks
-	diff := newP - oldP
-	verb := "выросла"
-	arrow := "📈"
-	if diff < 0 {
-		verb = "снизилась"
-		arrow = "📉"
-	}
-
-	oldStr := money.FormatKopecks(oldP)
-	newStr := money.FormatKopecks(newP)
-	delta := money.FormatKopecks(abs64(diff))
-	pct := percent(oldP, diff)
-
-	msg := fmt.Sprintf("%s Цена %s\n\n%s\nбыло %s\nстало %s\n%s %s (%s)",
-		arrow, verb,
-		view.TelegramLink(p),
-		html.EscapeString(oldStr), html.EscapeString(newStr),
-		sign(diff), html.EscapeString(delta), html.EscapeString(pct),
-	)
-	if d.Previous.Available && !d.Current.Available {
-		msg += "\n\nТовар пропал из наличия."
-	} else if !d.Previous.Available && d.Current.Available {
-		msg += "\n\nТовар снова в наличии."
-	}
-	return msg
-}
-
-func percent(old, diff int64) string {
-	if old == 0 {
-		return "—"
-	}
-	p := math.Abs(float64(diff) / float64(old) * 100)
-	return fmt.Sprintf("%.1f%%", p)
-}
-
-func sign(diff int64) string {
-	if diff < 0 {
-		return "−"
-	}
-	return "+"
 }
 
 func siteCheckInterval(site string) time.Duration {
@@ -469,13 +420,6 @@ func minCheckInterval(fetchers map[string]Fetcher) time.Duration {
 		return time.Hour
 	}
 	return min
-}
-
-func abs64(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
 }
 
 func (t *Tracker) finishStatus(force bool) {

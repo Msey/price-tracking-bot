@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -27,16 +26,7 @@ func (s *Store) ProductsDue(ctx context.Context, site string, olderThan time.Tim
 		limit = 1
 	}
 	cutoff := formatTime(olderThan)
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
-		FROM products p
-		JOIN subscriptions s ON s.product_id = p.id AND s.active = 1
-		LEFT JOIN price_history h ON h.product_id = p.id
-		WHERE p.site = ?
-		GROUP BY p.id
-		HAVING MAX(h.checked_at) IS NULL OR MAX(h.checked_at) <= ?
-		ORDER BY MAX(h.checked_at) IS NOT NULL, MAX(h.checked_at) ASC
-		LIMIT ?`, site, cutoff, limit)
+	rows, err := s.db.QueryContext(ctx, sqlProductsDue, site, cutoff, limit)
 	if err != nil {
 		return nil, fmt.Errorf("storage: товары к проверке (%s): %w", site, err)
 	}
@@ -59,13 +49,7 @@ func (s *Store) ProductsDue(ctx context.Context, site string, olderThan time.Tim
 // ActiveProducts — все товары сайта с хотя бы одной активной подпиской,
 // независимо от того, когда их проверяли в последний раз.
 func (s *Store) ActiveProducts(ctx context.Context, site string) ([]Product, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
-		FROM products p
-		JOIN subscriptions s ON s.product_id = p.id AND s.active = 1
-		WHERE p.site = ?
-		GROUP BY p.id
-		ORDER BY p.id`, site)
+	rows, err := s.db.QueryContext(ctx, sqlActiveProducts, site)
 	if err != nil {
 		return nil, fmt.Errorf("storage: активные товары (%s): %w", site, err)
 	}
@@ -107,31 +91,24 @@ func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string
 	var lastID, lastKopecks int64
 	var lastCurrency string
 	var lastAvail int
-	err = tx.QueryRowContext(ctx, `
-		SELECT id, price_kopecks, currency, available
-		FROM price_history
-		WHERE product_id = ?
-		ORDER BY checked_at DESC, id DESC
-		LIMIT 1`, productID).Scan(&lastID, &lastKopecks, &lastCurrency, &lastAvail)
+	err = tx.QueryRowContext(ctx, sqlLastSnapshot, productID).Scan(&lastID, &lastKopecks, &lastCurrency, &lastAvail)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return false, fmt.Errorf("storage: последняя цена товара %d: %w", productID, err)
 	case lastKopecks == kopecks && lastAvail == avail && lastCurrency == currency:
-		if _, err := tx.ExecContext(ctx, `UPDATE price_history SET checked_at = ? WHERE id = ?`, now, lastID); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlTouchSnapshot, now, lastID); err != nil {
 			return false, fmt.Errorf("storage: обновление даты товара %d: %w", productID, err)
 		}
 		repeated = true
 	}
 	if !repeated {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO price_history (product_id, price_kopecks, currency, available, checked_at)
-			VALUES (?, ?, ?, ?, ?)`, productID, kopecks, currency, avail, now); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlInsertSnapshot, productID, kopecks, currency, avail, now); err != nil {
 			return false, fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
 		}
 	}
 	if name != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE products SET name = ? WHERE id = ? AND name != ?`, name, productID, name); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlUpdateProductName, name, productID, name); err != nil {
 			return false, fmt.Errorf("storage: имя товара %d: %w", productID, err)
 		}
 	}
@@ -146,12 +123,7 @@ func (s *Store) LastSnapshots(ctx context.Context, productID int64, n int) ([]Sn
 	if n < 1 {
 		n = 1
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT price_kopecks, available, checked_at
-		FROM price_history
-		WHERE product_id = ?
-		ORDER BY checked_at DESC, id DESC
-		LIMIT ?`, productID, n)
+	rows, err := s.db.QueryContext(ctx, sqlLastSnapshots, productID, n)
 	if err != nil {
 		return nil, fmt.Errorf("storage: история товара %d: %w", productID, err)
 	}
@@ -183,25 +155,13 @@ func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (m
 		limit = defaultHistoryLimit
 	}
 
-	placeholders := make([]string, len(productIDs))
 	args := make([]any, 0, len(productIDs)+1)
-	for i, id := range productIDs {
-		placeholders[i] = "?"
+	for _, id := range productIDs {
 		args = append(args, id)
 	}
 	args = append(args, limit)
 
-	q := fmt.Sprintf(`
-		SELECT product_id, price_kopecks, available, checked_at
-		FROM (
-		    SELECT product_id, price_kopecks, available, checked_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
-		    FROM price_history
-		    WHERE product_id IN (%s)
-		)
-		WHERE rn <= ?
-		ORDER BY product_id, checked_at ASC, rn DESC`, strings.Join(placeholders, ","))
-
+	q := fmt.Sprintf(sqlHistories, sqlPlaceholders(len(productIDs)))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("storage: истории цен: %w", err)
@@ -234,8 +194,7 @@ type NotifiedState struct {
 // Notified возвращает базу сравнения для товара.
 func (s *Store) Notified(ctx context.Context, productID int64) (NotifiedState, error) {
 	var kopecks, avail sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT last_notified_kopecks, last_notified_available FROM products WHERE id = ?`, productID).Scan(&kopecks, &avail)
+	err := s.db.QueryRowContext(ctx, sqlNotified, productID).Scan(&kopecks, &avail)
 	if err != nil {
 		return NotifiedState{}, fmt.Errorf("storage: last_notified товара %d: %w", productID, err)
 	}
@@ -251,9 +210,7 @@ func (s *Store) MarkNotified(ctx context.Context, productID, kopecks int64, avai
 	if available {
 		avail = 1
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE products SET last_notified_kopecks = ?, last_notified_available = ? WHERE id = ?`,
-		kopecks, avail, productID)
+	_, err := s.db.ExecContext(ctx, sqlMarkNotified, kopecks, avail, productID)
 	if err != nil {
 		return fmt.Errorf("storage: mark notified товара %d: %w", productID, err)
 	}
@@ -262,11 +219,7 @@ func (s *Store) MarkNotified(ctx context.Context, productID, kopecks int64, avai
 
 // SubscriberChats — чаты, которым нужно сообщить о товаре.
 func (s *Store) SubscriberChats(ctx context.Context, productID int64) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.tg_chat_id
-		FROM subscriptions s
-		JOIN users u ON u.id = s.user_id
-		WHERE s.product_id = ? AND s.active = 1`, productID)
+	rows, err := s.db.QueryContext(ctx, sqlSubscriberChats, productID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: подписчики товара %d: %w", productID, err)
 	}
@@ -285,9 +238,7 @@ func (s *Store) SubscriberChats(ctx context.Context, productID int64) ([]int64, 
 
 // RecordFetchError пишет сбой, чтобы потом разбирать бан/челлендж.
 func (s *Store) RecordFetchError(ctx context.Context, productID int64, site, kind, message string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO fetch_errors (product_id, site, kind, message) VALUES (?, ?, ?, ?)`,
-		productID, site, kind, message)
+	_, err := s.db.ExecContext(ctx, sqlInsertFetchError, productID, site, kind, message)
 	if err != nil {
 		return fmt.Errorf("storage: запись ошибки загрузки: %w", err)
 	}
@@ -297,8 +248,7 @@ func (s *Store) RecordFetchError(ctx context.Context, productID int64, site, kin
 // ProductByID нужен, чтобы после замера подставить свежее имя в уведомление.
 func (s *Store) ProductByID(ctx context.Context, id int64) (Product, error) {
 	var p Product
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, site, external_key, url, name, city FROM products WHERE id = ?`, id).
+	err := s.db.QueryRowContext(ctx, sqlProductByID, id).
 		Scan(&p.ID, &p.Site, &p.ExternalKey, &p.URL, &p.Name, &p.City)
 	if err != nil {
 		return Product{}, fmt.Errorf("storage: товар %d: %w", id, err)

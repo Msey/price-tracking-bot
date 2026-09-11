@@ -3,6 +3,7 @@ package fetch
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
@@ -363,8 +365,14 @@ func (b *Browser) writeExtension() (string, error) {
 }
 
 func (b *Browser) auth(r *http.Request) bool {
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return got != "" && got == b.token
+	if b.token == "" {
+		return false
+	}
+	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if got == "" || len(got) != len(b.token) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(b.token)) == 1
 }
 
 func (b *Browser) markExtSeen() {
@@ -380,24 +388,33 @@ func (b *Browser) markExtSeen() {
 }
 
 func (b *Browser) handlePing(w http.ResponseWriter, r *http.Request) {
-	cors(w)
+	cors(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if !b.auth(r) {
+		http.Error(w, "auth", http.StatusUnauthorized)
 		return
 	}
 	b.markExtSeen()
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func cors(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+func cors(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if !strings.HasPrefix(origin, "chrome-extension://") {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	w.Header().Set("Vary", "Origin")
 }
 
 func (b *Browser) handleWaitJob(w http.ResponseWriter, r *http.Request) {
-	cors(w)
+	cors(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -445,7 +462,7 @@ func (b *Browser) handleWaitJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *Browser) handleResult(w http.ResponseWriter, r *http.Request) {
-	cors(w)
+	cors(w, r)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -506,11 +523,11 @@ func shopHostKey(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	switch {
 	case strings.Contains(host, "dns-shop.ru"):
-		return "dns"
+		return string(sites.DNS)
 	case strings.Contains(host, "ozon.ru"):
-		return "ozon"
+		return string(sites.Ozon)
 	case strings.Contains(host, "market.yandex"):
-		return "market"
+		return string(sites.YandexMarket)
 	default:
 		return ""
 	}

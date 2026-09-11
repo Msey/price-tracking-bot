@@ -14,6 +14,8 @@ const (
 	chatBob   = int64(1002)
 	dnsKey    = "9ee3a4f41358d9cb"
 	dnsURL    = "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/noutbuk/"
+	ozonKey   = "2190214590"
+	ozonURL   = "https://www.ozon.ru/product/2190214590"
 )
 
 func newStore(t *testing.T) *Store {
@@ -107,6 +109,226 @@ func TestProductIsSharedBetweenUsers(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("записей в products %d, ожидалась одна", count)
+	}
+}
+
+// /list каждого пользователя видит только свои ссылки, даже если в базе есть чужие.
+func TestListSubscriptionsHidesOtherUsers(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatalf("подписка Алисы: %v", err)
+	}
+	bobProduct, _, err := s.AddSubscription(ctx, chatBob, "ozon", ozonKey, ozonURL, "moscow")
+	if err != nil {
+		t.Fatalf("подписка Боба: %v", err)
+	}
+
+	aliceItems, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil {
+		t.Fatalf("ListSubscriptions Алисы: %v", err)
+	}
+	if len(aliceItems) != 1 {
+		t.Fatalf("у Алисы подписок %d, ожидалась одна", len(aliceItems))
+	}
+	if aliceItems[0].Product.URL != dnsURL {
+		t.Errorf("Алиса увидела %q, ожидалась своя DNS-ссылка", aliceItems[0].Product.URL)
+	}
+
+	bobItems, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil {
+		t.Fatalf("ListSubscriptions Боба: %v", err)
+	}
+	if len(bobItems) != 1 {
+		t.Fatalf("у Боба подписок %d, ожидалась одна", len(bobItems))
+	}
+	if bobItems[0].Product.URL != ozonURL {
+		t.Errorf("Боб увидел %q, ожидалась своя Ozon-ссылка", bobItems[0].Product.URL)
+	}
+
+	empty, err := s.ListSubscriptions(ctx, 0)
+	if err != nil {
+		t.Fatalf("ListSubscriptions(0): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("без пользователя вернулось %d подписок", len(empty))
+	}
+
+	removed, err := s.DeleteSubscription(ctx, chatAlice, bobProduct.ID)
+	if err != nil {
+		t.Fatalf("DeleteSubscription чужого товара: %v", err)
+	}
+	if removed {
+		t.Error("Алиса сняла ссылку Боба")
+	}
+	bobAgain, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil {
+		t.Fatalf("повторный список Боба: %v", err)
+	}
+	if len(bobAgain) != 1 {
+		t.Errorf("после чужого /del у Боба подписок %d", len(bobAgain))
+	}
+}
+
+func TestRejectsInvalidUserID(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	if _, err := s.EnsureUser(ctx, 0); !errors.Is(err, ErrNoUser) {
+		t.Errorf("EnsureUser(0): %v", err)
+	}
+	if _, err := s.EnsureUser(ctx, -7); !errors.Is(err, ErrNoUser) {
+		t.Errorf("EnsureUser(-7): %v", err)
+	}
+	if _, _, err := s.AddSubscription(ctx, 0, "dns", dnsKey, dnsURL, "moscow"); !errors.Is(err, ErrNoUser) {
+		t.Errorf("AddSubscription(0): %v", err)
+	}
+	if items, err := s.ListSubscriptions(ctx, -7); err != nil || len(items) != 0 {
+		t.Errorf("ListSubscriptions(-7): n=%d err=%v", len(items), err)
+	}
+	if removed, err := s.DeleteSubscription(ctx, 0, 1); err != nil || removed {
+		t.Errorf("DeleteSubscription(0): removed=%v err=%v", removed, err)
+	}
+	if removed, err := s.DeleteSubscription(ctx, chatAlice, 0); err != nil || removed {
+		t.Errorf("DeleteSubscription(product 0): removed=%v err=%v", removed, err)
+	}
+	if _, total, removed, err := s.DeleteOwnAt(ctx, 0, 1); err != nil || removed || total != 0 {
+		t.Errorf("DeleteOwnAt(0): total=%d removed=%v err=%v", total, removed, err)
+	}
+}
+
+func TestDeleteOwnAtBoundaries(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	urls := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("%08x%08x", i, i)
+		urls[i] = "https://www.dns-shop.ru/product/" + key + "/"
+		if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", key, urls[i], "moscow"); err != nil {
+			t.Fatalf("Алиса #%d: %v", i+1, err)
+		}
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "ozon", ozonKey, ozonURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, 0); err != nil || removed || total != 0 {
+		t.Errorf("номер 0: total=%d removed=%v err=%v", total, removed, err)
+	}
+	if _, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, -1); err != nil || removed || total != 0 {
+		t.Errorf("номер -1: total=%d removed=%v err=%v", total, removed, err)
+	}
+	if _, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, 4); err != nil || removed || total != 3 {
+		t.Errorf("номер 4 из 3: total=%d removed=%v err=%v", total, removed, err)
+	}
+
+	p, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, 3)
+	if err != nil || !removed || total != 3 || p.URL != urls[2] {
+		t.Fatalf("последний: url=%q total=%d removed=%v err=%v", p.URL, total, removed, err)
+	}
+
+	p, total, removed, err = s.DeleteOwnAt(ctx, chatAlice, 1)
+	if err != nil || !removed || total != 2 || p.URL != urls[0] {
+		t.Fatalf("первый: url=%q total=%d removed=%v err=%v", p.URL, total, removed, err)
+	}
+
+	left, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].Product.URL != urls[1] {
+		t.Fatalf("после первого и последнего осталось %+v", left)
+	}
+
+	p, total, removed, err = s.DeleteOwnAt(ctx, chatAlice, 1)
+	if err != nil || !removed || total != 1 || p.URL != urls[1] {
+		t.Fatalf("повторный /del 1: url=%q total=%d removed=%v err=%v", p.URL, total, removed, err)
+	}
+
+	bob, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bob) != 1 || bob[0].Product.URL != ozonURL {
+		t.Errorf("чужие /del задели Боба: %+v", bob)
+	}
+}
+
+func TestDeleteOwnAtWhenCallerHasNothing(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if _, _, err := s.AddSubscription(ctx, chatBob, "ozon", ozonKey, ozonURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	alice, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil || len(alice) != 0 {
+		t.Fatalf("у Алисы без подписок: n=%d err=%v", len(alice), err)
+	}
+	if _, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, 1); err != nil || removed || total != 0 {
+		t.Errorf("пустой /del 1: total=%d removed=%v err=%v", total, removed, err)
+	}
+
+	bob, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil || len(bob) != 1 || bob[0].Product.URL != ozonURL {
+		t.Errorf("Боб пострадал: %+v err=%v", bob, err)
+	}
+}
+
+func TestDeleteOwnAtSkipsInactive(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	first, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.AddSubscription(ctx, chatAlice, "ozon", ozonKey, ozonURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET active = 0 WHERE product_id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil || len(items) != 1 || items[0].Product.ID != second.ID {
+		t.Fatalf("в списке должна быть только активная: %+v err=%v", items, err)
+	}
+
+	p, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, 1)
+	if err != nil || !removed || total != 1 || p.ID != second.ID {
+		t.Fatalf("/del 1 снял не активную: id=%d total=%d removed=%v err=%v", p.ID, total, removed, err)
+	}
+}
+
+func TestDeleteOwnAtCapLastAndOvershoot(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	var lastURL string
+	for i := 0; i < MaxSubscriptions; i++ {
+		key := fmt.Sprintf("%08x%08x", i, i)
+		lastURL = "https://www.dns-shop.ru/product/" + key + "/"
+		if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", key, lastURL, "moscow"); err != nil {
+			t.Fatalf("подписка #%d: %v", i+1, err)
+		}
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "ozon", ozonKey, ozonURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	p, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, MaxSubscriptions)
+	if err != nil || !removed || total != MaxSubscriptions || p.URL != lastURL {
+		t.Fatalf("/del %d: url=%q total=%d removed=%v err=%v", MaxSubscriptions, p.URL, total, removed, err)
+	}
+	if _, total, removed, err := s.DeleteOwnAt(ctx, chatAlice, MaxSubscriptions); err != nil || removed || total != MaxSubscriptions-1 {
+		t.Errorf("номер за потолком: total=%d removed=%v err=%v", total, removed, err)
+	}
+
+	bob, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil || len(bob) != 1 {
+		t.Errorf("Боб: n=%d err=%v", len(bob), err)
 	}
 }
 
@@ -270,6 +492,18 @@ func TestSubscriptionCap(t *testing.T) {
 func TestOpenRejectsEmptyPath(t *testing.T) {
 	if _, err := Open(""); err == nil {
 		t.Fatal("Open(\"\") должен возвращать ошибку")
+	}
+}
+
+func TestOpenRejectsURI(t *testing.T) {
+	for _, path := range []string{
+		"file:bot.db",
+		"file:bot.db?mode=ro",
+		filepath.Join(t.TempDir(), "bot.db?mode=memory"),
+	} {
+		if _, err := Open(path); err == nil {
+			t.Fatalf("Open(%q) должен отклонять URI SQLite", path)
+		}
 	}
 }
 

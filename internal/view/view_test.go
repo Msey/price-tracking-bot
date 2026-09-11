@@ -2,6 +2,7 @@ package view
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,5 +75,26 @@ func TestCityTitle(t *testing.T) {
 	}
 	if CityTitle("kazan") != "kazan" {
 		t.Error("неизвестный город остаётся как есть")
+	}
+}
+
+func TestPriceChange(t *testing.T) {
+	p := storage.Product{URL: "https://www.dns-shop.ru/product/abc/", Name: "Ноутбук"}
+	got := PriceChange(p,
+		storage.SnapshotRow{PriceKopecks: 10000, Available: true},
+		storage.SnapshotRow{PriceKopecks: 9000, Available: true},
+	)
+	if !strings.Contains(got, "снизилась") || !strings.Contains(got, "Ноутбук") {
+		t.Fatalf("падение цены: %s", got)
+	}
+	if strings.Contains(got, "<") && !strings.Contains(got, "<a href=") {
+		t.Fatalf("ожидалась HTML-ссылка: %s", got)
+	}
+	gone := PriceChange(p,
+		storage.SnapshotRow{PriceKopecks: 9000, Available: true},
+		storage.SnapshotRow{PriceKopecks: 9000, Available: false},
+	)
+	if !strings.Contains(gone, "пропал из наличия") {
+		t.Fatalf("наличие: %s", gone)
 	}
 }

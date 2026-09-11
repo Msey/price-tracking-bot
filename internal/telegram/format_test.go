@@ -49,3 +49,16 @@ func TestHumanDuration(t *testing.T) {
 		t.Errorf("минуты: %q", got)
 	}
 }
+
+func TestHelpTextIsForUsers(t *testing.T) {
+	for _, want := range []string{"/list", "/del", "DNS", "Ozon"} {
+		if !strings.Contains(helpText, want) {
+			t.Errorf("в /help нет %q:\n%s", want, helpText)
+		}
+	}
+	for _, extra := range []string{"банит", "пауза", "Wildberries", "сутки", "час", "/help"} {
+		if strings.Contains(helpText, extra) {
+			t.Errorf("в /help лишнее %q:\n%s", extra, helpText)
+		}
+	}
+}

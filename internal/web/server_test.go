@@ -34,6 +34,25 @@ func TestIndexEmpty(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "заявок") {
 		t.Fatal("для нуля ожидалась форма «заявок»")
 	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("нет nosniff")
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatal("нет X-Frame-Options")
+	}
+}
+
+func TestLoopbackAddr(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		if err := loopbackAddr(addr); err != nil {
+			t.Fatalf("%s: %v", addr, err)
+		}
+	}
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "192.168.1.10:8080", "example.com:8080"} {
+		if err := loopbackAddr(addr); err == nil {
+			t.Fatalf("%s должен быть запрещён", addr)
+		}
+	}
 }
 
 func TestIndexListsRequests(t *testing.T) {

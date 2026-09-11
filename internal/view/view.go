@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
@@ -83,4 +84,42 @@ func RuPlural(n int, one, few, many string) string {
 // приходит из магазина, поэтому и адрес, и текст экранируются.
 func TelegramLink(p storage.Product) string {
 	return fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(p.URL), html.EscapeString(p.Title()))
+}
+
+// PriceChange — HTML для уведомления о смене цены. Сборка текста здесь,
+// чтобы цикл проверки не знал про вёрстку Telegram.
+func PriceChange(p storage.Product, prev, cur storage.SnapshotRow) string {
+	diff := cur.PriceKopecks - prev.PriceKopecks
+	verb, arrow := "выросла", "📈"
+	if diff < 0 {
+		verb, arrow = "снизилась", "📉"
+	}
+	abs := diff
+	if abs < 0 {
+		abs = -abs
+	}
+	pct := "—"
+	if prev.PriceKopecks != 0 {
+		ratio := float64(abs) / float64(prev.PriceKopecks) * 100
+		pct = fmt.Sprintf("%.1f%%", ratio)
+	}
+	mark := "+"
+	if diff < 0 {
+		mark = "−"
+	}
+	msg := fmt.Sprintf("%s Цена %s\n\n%s\nбыло %s\nстало %s\n%s %s (%s)",
+		arrow, verb,
+		TelegramLink(p),
+		html.EscapeString(money.FormatKopecks(prev.PriceKopecks)),
+		html.EscapeString(money.FormatKopecks(cur.PriceKopecks)),
+		mark,
+		html.EscapeString(money.FormatKopecks(abs)),
+		html.EscapeString(pct),
+	)
+	if prev.Available && !cur.Available {
+		msg += "\n\nТовар пропал из наличия."
+	} else if !prev.Available && cur.Available {
+		msg += "\n\nТовар снова в наличии."
+	}
+	return msg
 }

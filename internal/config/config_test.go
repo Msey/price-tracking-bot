@@ -3,13 +3,11 @@ package config
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestLoadValidatesTokenAndCity(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DATABASE_PATH", "test.db")
-	t.Setenv("CHECK_INTERVAL", "20m")
 	t.Setenv("DEFAULT_CITY", "moscow")
 	t.Setenv("ALLOWED_USERS", "")
 	t.Setenv("GUI", "1")
@@ -20,9 +18,6 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	}
 	if cfg.DefaultCity != "moscow" {
 		t.Errorf("city = %q", cfg.DefaultCity)
-	}
-	if cfg.CheckInterval != 20*time.Minute {
-		t.Errorf("interval = %s", cfg.CheckInterval)
 	}
 	if cfg.UIAddr != "127.0.0.1:8080" {
 		t.Errorf("UIAddr = %q", cfg.UIAddr)
@@ -35,7 +30,6 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 func TestLoadRejectsHTMLCity(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DEFAULT_CITY", "<b>msk</b>")
-	t.Setenv("CHECK_INTERVAL", "20m")
 	t.Setenv("ALLOWED_USERS", "")
 
 	_, err := Load()
@@ -50,7 +44,6 @@ func TestLoadRejectsHTMLCity(t *testing.T) {
 func TestLoadRejectsMalformedToken(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "not-a-token")
 	t.Setenv("DEFAULT_CITY", "moscow")
-	t.Setenv("CHECK_INTERVAL", "20m")
 
 	_, err := Load()
 	if err == nil {
@@ -58,14 +51,13 @@ func TestLoadRejectsMalformedToken(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsShortInterval(t *testing.T) {
+func TestLoadIgnoresCheckInterval(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DEFAULT_CITY", "moscow")
 	t.Setenv("CHECK_INTERVAL", "5s")
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("ожидалась ошибка на слишком коротком интервале")
+	if _, err := Load(); err != nil {
+		t.Fatalf("старый CHECK_INTERVAL не должен ломать загрузку: %v", err)
 	}
 }
 
@@ -87,7 +79,6 @@ func TestAllowed(t *testing.T) {
 func TestLoadDisablesUI(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DEFAULT_CITY", "moscow")
-	t.Setenv("CHECK_INTERVAL", "20m")
 	t.Setenv("UI_ADDR", "off")
 
 	cfg, err := Load()
@@ -102,7 +93,6 @@ func TestLoadDisablesUI(t *testing.T) {
 func TestLoadDisablesGUI(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DEFAULT_CITY", "moscow")
-	t.Setenv("CHECK_INTERVAL", "20m")
 	t.Setenv("GUI", "off")
 
 	cfg, err := Load()

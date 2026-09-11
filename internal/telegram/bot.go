@@ -35,21 +35,15 @@ const (
 var (
 	errOffline  = errors.New("telegram: нет связи, уведомление отложено")
 	tokenInText = regexp.MustCompile(`bot\d+:[A-Za-z0-9_-]+`)
+	helpText    = fmt.Sprintf(`Я слежу за ценами и пишу, когда они меняются.
+
+Пришлите ссылку на товар DNS, Яндекс.Маркета или Ozon.
+
+/list — ваши ссылки
+/del номер — снять ссылку
+
+Не больше %d ссылок.`, storage.MaxSubscriptions)
 )
-
-const helpText = `Я слежу за ценами и пишу, когда они меняются.
-
-Просто пришлите ссылку на товар — этого достаточно.
-
-<b>Команды</b>
-/list — что я отслеживаю
-/del &lt;номер&gt; — снять товар с отслеживания
-/help — эта справка
-
-<b>Магазины</b>
-Сейчас работают DNS, Яндекс.Маркет и Ozon. DNS и Маркет проверяю раз в сутки, Ozon — раз в час; между карточками пауза, иначе магазин банит.
-
-Wildberries на очереди.`
 
 type Bot struct {
 	store *storage.Store
@@ -229,7 +223,10 @@ func (b *Bot) live() *telebot.Bot {
 }
 
 // Notify отправляет HTML-сообщение в личку. Нужен трекеру цен.
-func (b *Bot) Notify(_ context.Context, chatID int64, message string) error {
+func (b *Bot) Notify(ctx context.Context, chatID int64, message string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tb := b.live()
 	if tb == nil {
 		return errOffline
@@ -258,23 +255,26 @@ func (b *Bot) accessMiddleware(next telebot.HandlerFunc) telebot.HandlerFunc {
 }
 
 func (b *Bot) handleStart(c telebot.Context) error {
-	b.log.Info("команда /start", "chat_id", c.Chat().ID, "user_id", c.Sender().ID)
+	userID := telegramUserID(c)
+	b.log.Info("команда /start", "user_id", userID)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
-	if _, err := b.store.EnsureUser(ctx, c.Chat().ID); err != nil {
-		return err
+	if userID > 0 {
+		if _, err := b.store.EnsureUser(ctx, userID); err != nil {
+			return err
+		}
 	}
 	return c.Send(helpText, telebot.NoPreview)
 }
 
 func (b *Bot) handleHelp(c telebot.Context) error {
-	b.log.Info("команда /help", "chat_id", c.Chat().ID)
+	b.log.Info("команда /help", "user_id", telegramUserID(c))
 	return c.Send(helpText, telebot.NoPreview)
 }
 
 func (b *Bot) handleText(c telebot.Context) error {
 	text := strings.TrimSpace(c.Text())
-	b.log.Info("сообщение в чат", "chat_id", c.Chat().ID, "text", clipLog(text, 180))
+	b.log.Info("сообщение в чат", "user_id", telegramUserID(c), "text", clipLog(text, 180))
 	if text == "" {
 		return nil
 	}
@@ -286,7 +286,7 @@ func (b *Bot) handleText(c telebot.Context) error {
 
 func (b *Bot) handleAdd(c telebot.Context) error {
 	args := strings.TrimSpace(strings.Join(c.Args(), " "))
-	b.log.Info("команда /add", "chat_id", c.Chat().ID, "args", clipLog(args, 180))
+	b.log.Info("команда /add", "user_id", telegramUserID(c), "args", clipLog(args, 180))
 	if args == "" {
 		return c.Send("Использование: /add &lt;ссылка на товар&gt;", telebot.NoPreview)
 	}
@@ -302,8 +302,12 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
+	userID := telegramUserID(c)
+	if userID <= 0 {
+		return nil
+	}
 	product, created, err := b.store.AddSubscription(
-		ctx, c.Chat().ID,
+		ctx, userID,
 		string(ref.Site), ref.ExternalKey, ref.URL, b.cfg.DefaultCity)
 	if errors.Is(err, storage.ErrTooManySubscriptions) {
 		return c.Send(fmt.Sprintf(
@@ -319,7 +323,7 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 	}
 
 	b.log.Info("добавлена подписка",
-		"chat_id", c.Chat().ID, "site", ref.Site, "key", ref.ExternalKey)
+		"user_id", userID, "site", ref.Site, "key", ref.ExternalKey)
 
 	return c.Send(fmt.Sprintf(
 		"Добавил в отслеживание.\n\n%s\nМагазин: %s\nГород: %s\n\n"+
@@ -329,11 +333,12 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 }
 
 func (b *Bot) handleList(c telebot.Context) error {
-	b.log.Info("команда /list", "chat_id", c.Chat().ID)
+	userID := telegramUserID(c)
+	b.log.Info("команда /list", "user_id", userID)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	text, markup, err := b.listContent(ctx, c.Chat().ID)
+	text, markup, err := b.listContent(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -345,7 +350,8 @@ func (b *Bot) handleList(c telebot.Context) error {
 
 func (b *Bot) handleDelete(c telebot.Context) error {
 	args := c.Args()
-	b.log.Info("команда /del", "chat_id", c.Chat().ID, "args", strings.Join(args, " "))
+	userID := telegramUserID(c)
+	b.log.Info("команда /del", "user_id", userID, "args", strings.Join(args, " "))
 	if len(args) == 0 {
 		return c.Send("Использование: /del &lt;номер из /list&gt;", telebot.NoPreview)
 	}
@@ -358,29 +364,34 @@ func (b *Bot) handleDelete(c telebot.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	items, err := b.store.ListSubscriptions(ctx, c.Chat().ID)
+	item, total, removed, err := b.deleteOwn(ctx, userID, n)
 	if err != nil {
 		return err
 	}
-	if n > len(items) {
-		return c.Send(fmt.Sprintf("У вас всего %d товаров. Посмотрите /list.", len(items)), telebot.NoPreview)
-	}
-
-	item := items[n-1]
-	removed, err := b.store.DeleteSubscription(ctx, c.Chat().ID, item.Product.ID)
-	if err != nil {
-		return err
+	if total == 0 || n > total {
+		if total == 0 {
+			return c.Send("Список пуст. Пришлите ссылку на товар, чтобы начать.", telebot.NoPreview)
+		}
+		return c.Send(fmt.Sprintf("У вас всего %d товаров. Посмотрите /list.", total), telebot.NoPreview)
 	}
 	if !removed {
 		return c.Send("Этого товара уже нет в списке. Посмотрите /list.", telebot.NoPreview)
 	}
-	b.log.Info("подписка снята", "chat_id", c.Chat().ID, "product", item.Product.ID)
+	b.log.Info("подписка снята", "user_id", userID, "product", item.Product.ID)
 	return c.Send("Снял с отслеживания:\n"+linkTo(item.Product), telebot.NoPreview)
+}
+
+// deleteOwn снимает только n-й товар из списка этого пользователя.
+// Чужой номер и чужая подписка сюда не попадают.
+func (b *Bot) deleteOwn(ctx context.Context, userID int64, n int) (storage.Tracked, int, bool, error) {
+	p, total, removed, err := b.store.DeleteOwnAt(ctx, userID, n)
+	return storage.Tracked{Product: p}, total, removed, err
 }
 
 func (b *Bot) handleUnsubButton(c telebot.Context) error {
 	productID, err := strconv.ParseInt(c.Data(), 10, 64)
-	b.log.Info("кнопка отписки", "chat_id", c.Chat().ID, "product", productID)
+	userID := telegramUserID(c)
+	b.log.Info("кнопка отписки", "user_id", userID, "product", productID)
 	if err != nil || productID < 1 {
 		return c.Respond(&telebot.CallbackResponse{Text: "Не понял, какой это товар", ShowAlert: true})
 	}
@@ -388,7 +399,7 @@ func (b *Bot) handleUnsubButton(c telebot.Context) error {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	removed, err := b.store.DeleteSubscription(ctx, c.Chat().ID, productID)
+	removed, err := b.store.DeleteSubscription(ctx, userID, productID)
 	if err != nil {
 		return err
 	}
@@ -403,7 +414,7 @@ func (b *Bot) handleUnsubButton(c telebot.Context) error {
 		return err
 	}
 
-	listText, markup, err := b.listContent(ctx, c.Chat().ID)
+	listText, markup, err := b.listContent(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -414,6 +425,9 @@ func (b *Bot) handleUnsubButton(c telebot.Context) error {
 }
 
 func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.ReplyMarkup, error) {
+	if chatID <= 0 {
+		return "Список пуст. Пришлите ссылку на товар, чтобы начать.", nil, nil
+	}
 	items, err := b.store.ListSubscriptions(ctx, chatID)
 	if err != nil {
 		return "", nil, err
@@ -426,7 +440,7 @@ func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.R
 	var rows []telebot.Row
 	var sb strings.Builder
 
-	fmt.Fprintf(&sb, "Отслеживаю товаров: %d\n", len(items))
+	fmt.Fprintf(&sb, "Ваши ссылки: %d\n", len(items))
 	shown := 0
 	for i, item := range items {
 		entry := fmt.Sprintf("\n%d. %s\n   %s", i+1, linkTo(item.Product), html.EscapeString(describePrice(item)))
@@ -447,6 +461,15 @@ func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.R
 	}
 	markup.Inline(rows...)
 	return sb.String(), markup, nil
+}
+
+// telegramUserID — кто написал боту. Список и лимит считаются по отправителю,
+// а не по чату: чужие ссылки из /list увидеть нельзя.
+func telegramUserID(c telebot.Context) int64 {
+	if c == nil || c.Sender() == nil {
+		return 0
+	}
+	return c.Sender().ID
 }
 
 func explainParseError(err error) string {

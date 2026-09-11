@@ -71,7 +71,7 @@ var migrations = []string{
 
 func (s *Store) migrate(ctx context.Context) error {
 	var version int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	if err := s.db.QueryRowContext(ctx, pragmaUserVersion).Scan(&version); err != nil {
 		return fmt.Errorf("storage: чтение версии схемы: %w", err)
 	}
 	if version > len(migrations) {
@@ -89,7 +89,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("storage: миграция %d: %w", step, err)
 		}
 		// PRAGMA не принимает параметры, поэтому число подставляется в текст.
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", step)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(pragmaUserVersionSet, step)); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("storage: миграция %d, запись версии: %w", step, err)
 		}

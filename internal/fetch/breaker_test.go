@@ -52,3 +52,23 @@ func TestCircuitFile(t *testing.T) {
 		t.Fatal("пустой профиль")
 	}
 }
+
+func TestCircuitFileKeepsOldMarketName(t *testing.T) {
+	dir := t.TempDir()
+	profile := filepath.Join(dir, "chrome-plain")
+	old := filepath.Join(dir, "circuit-market.json")
+	if err := os.WriteFile(old, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := circuitFile(profile, "yandex_market")
+	if got != old {
+		t.Fatalf("старый файл: %q, ожидался %q", got, old)
+	}
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	got = circuitFile(profile, "yandex_market")
+	if filepath.Base(got) != "circuit-yandex_market.json" {
+		t.Fatalf("новый файл: %q", got)
+	}
+}

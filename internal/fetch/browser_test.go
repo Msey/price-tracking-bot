@@ -198,6 +198,73 @@ func TestWaitJobPrefersNewURLOverClose(t *testing.T) {
 	}
 }
 
+func TestPingRequiresAuth(t *testing.T) {
+	b := newTestBrowser(t)
+	res, err := http.Get("http://" + b.addr + "/ext/ping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("без токена код %d, нужен 401", res.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+b.addr+"/ext/ping", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	ok, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok.Body.Close()
+	if ok.StatusCode != http.StatusNoContent {
+		t.Fatalf("со своим токеном код %d", ok.StatusCode)
+	}
+}
+
+func TestCORSRejectsWebsiteOrigin(t *testing.T) {
+	b := newTestBrowser(t)
+	req, err := http.NewRequest(http.MethodOptions, "http://"+b.addr+"/ext/wait-job", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://evil.example")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if got := res.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("сайту отдали CORS Origin %q", got)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Private-Network"); got != "" {
+		t.Fatalf("сайту отдали Private-Network %q", got)
+	}
+}
+
+func TestCORSAllowsExtensionOrigin(t *testing.T) {
+	b := newTestBrowser(t)
+	origin := "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef"
+	req, err := http.NewRequest(http.MethodOptions, "http://"+b.addr+"/ext/wait-job", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", origin)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if got := res.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("Origin %q", got)
+	}
+	if got := res.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("Private-Network %q", got)
+	}
+}
+
 func newTestBrowser(t *testing.T) *Browser {
 	t.Helper()
 	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})

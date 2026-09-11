@@ -21,6 +21,11 @@ func TestNewDoesNotNeedNetwork(t *testing.T) {
 	if err := b.Notify(context.Background(), 1, "hi"); !errors.Is(err, errOffline) {
 		t.Fatalf("Notify без связи: %v", err)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.Notify(ctx, 1, "hi"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("отменённый контекст: %v", err)
+	}
 }
 
 func TestStatusTextWhileRetrying(t *testing.T) {

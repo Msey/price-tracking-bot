@@ -7,17 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
 	_ "modernc.org/sqlite" // драйвер SQLite на чистом Go, без CGO
 )
 
-// MaxSubscriptions — потолок активных подписок на одного пользователя.
-// Упирается не в SQLite, а в Telegram (клавиатура до 100 кнопок, сообщение до 4096
-// символов) и в то, что DNS после серии быстрых запросов банит IP.
-const MaxSubscriptions = 50
+// MaxSubscriptions — потолок активных ссылок на одного пользователя Telegram.
+const MaxSubscriptions = 10
 
 // ErrTooManySubscriptions — пользователь уже держит MaxSubscriptions товаров.
 var ErrTooManySubscriptions = errors.New("слишком много подписок")
+
+// ErrNoUser — нет валидного Telegram user id (0 или отрицательный).
+var ErrNoUser = errors.New("нет пользователя")
 
 type Store struct {
 	db *sql.DB
@@ -54,8 +56,8 @@ type Tracked struct {
 
 // Open открывает базу и приводит схему к актуальной версии.
 func Open(path string) (*Store, error) {
-	if path == "" {
-		return nil, fmt.Errorf("storage: пустой путь к базе")
+	if err := validDBPath(path); err != nil {
+		return nil, err
 	}
 	// Путь передаём как имя файла, не как SQLite URI: иначе символы ? и &
 	// в DATABASE_PATH превратились бы в параметры подключения.
@@ -73,9 +75,9 @@ func Open(path string) (*Store, error) {
 	}
 
 	for _, pragma := range []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA foreign_keys = ON",
+		pragmaJournal,
+		pragmaBusyTimeout,
+		pragmaForeignKeys,
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
@@ -93,13 +95,24 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+func validDBPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("storage: пустой путь к базе")
+	}
+	lower := strings.ToLower(path)
+	if strings.ContainsAny(path, "?\x00") || strings.HasPrefix(lower, "file:") {
+		return fmt.Errorf("storage: путь к базе не должен быть URI SQLite")
+	}
+	return nil
+}
+
 // EnsureUser регистрирует пользователя, если он ещё не известен.
 func (s *Store) EnsureUser(ctx context.Context, chatID int64) (int64, error) {
+	if chatID <= 0 {
+		return 0, ErrNoUser
+	}
 	var id int64
-	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO users (tg_chat_id) VALUES (?)
-		ON CONFLICT (tg_chat_id) DO UPDATE SET tg_chat_id = excluded.tg_chat_id
-		RETURNING id`, chatID).Scan(&id)
+	err := s.db.QueryRowContext(ctx, sqlEnsureUser, chatID).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("storage: регистрация пользователя %d: %w", chatID, err)
 	}
@@ -109,6 +122,9 @@ func (s *Store) EnsureUser(ctx context.Context, chatID int64) (int64, error) {
 // AddSubscription подписывает пользователя на товар, создавая товар при
 // необходимости. Второй результат — false, если подписка уже была.
 func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externalKey, productURL, city string) (Product, bool, error) {
+	if chatID <= 0 {
+		return Product{}, false, ErrNoUser
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Product{}, false, fmt.Errorf("storage: начало транзакции: %w", err)
@@ -116,19 +132,12 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	defer tx.Rollback()
 
 	var userID int64
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO users (tg_chat_id) VALUES (?)
-		ON CONFLICT (tg_chat_id) DO UPDATE SET tg_chat_id = excluded.tg_chat_id
-		RETURNING id`, chatID).Scan(&userID); err != nil {
+	if err := tx.QueryRowContext(ctx, sqlEnsureUser, chatID).Scan(&userID); err != nil {
 		return Product{}, false, fmt.Errorf("storage: регистрация пользователя %d: %w", chatID, err)
 	}
 
 	var existing Product
-	err = tx.QueryRowContext(ctx, `
-		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
-		FROM products p
-		JOIN subscriptions s ON s.product_id = p.id AND s.user_id = ? AND s.active = 1
-		WHERE p.site = ? AND p.external_key = ? AND p.city = ?`,
+	err = tx.QueryRowContext(ctx, sqlFindActiveSubscription,
 		userID, site, externalKey, city,
 	).Scan(&existing.ID, &existing.Site, &existing.ExternalKey, &existing.URL, &existing.Name, &existing.City)
 	switch {
@@ -142,8 +151,7 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	}
 
 	var n int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM subscriptions WHERE user_id = ? AND active = 1`, userID).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, sqlCountActiveSubscriptions, userID).Scan(&n); err != nil {
 		return Product{}, false, fmt.Errorf("storage: подсчёт подписок: %w", err)
 	}
 	if n >= MaxSubscriptions {
@@ -154,16 +162,11 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	// id = id — намеренный no-op: SQLite не возвращает строку при DO NOTHING,
 	// а URL общего товара трогать нельзя, иначе второй подписчик перезапишет
 	// ссылку у всех остальных.
-	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO products (site, external_key, url, city) VALUES (?, ?, ?, ?)
-		ON CONFLICT (site, external_key, city) DO UPDATE SET id = id
-		RETURNING id, name, url`, site, externalKey, productURL, city).Scan(&product.ID, &product.Name, &product.URL); err != nil {
+	if err := tx.QueryRowContext(ctx, sqlUpsertProduct, site, externalKey, productURL, city).Scan(&product.ID, &product.Name, &product.URL); err != nil {
 		return Product{}, false, fmt.Errorf("storage: сохранение товара %s/%s: %w", site, externalKey, err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO subscriptions (user_id, product_id) VALUES (?, ?)
-		ON CONFLICT (user_id, product_id) DO UPDATE SET active = 1`, userID, product.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, sqlUpsertSubscription, userID, product.ID); err != nil {
 		return Product{}, false, fmt.Errorf("storage: подписка на товар %d: %w", product.ID, err)
 	}
 
@@ -173,21 +176,13 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	return product, true, nil
 }
 
-// ListSubscriptions возвращает активные подписки пользователя.
+// ListSubscriptions возвращает только активные подписки этого пользователя Telegram.
+// Чужие ссылки сюда не попадают: это граница для команды /list.
 func (s *Store) ListSubscriptions(ctx context.Context, chatID int64) ([]Tracked, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city,
-		       last.price_kopecks, last.checked_at
-		FROM subscriptions s
-		JOIN users u ON u.id = s.user_id
-		JOIN products p ON p.id = s.product_id
-		LEFT JOIN (
-		    SELECT product_id, price_kopecks, checked_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
-		    FROM price_history
-		) last ON last.product_id = p.id AND last.rn = 1
-		WHERE u.tg_chat_id = ? AND s.active = 1
-		ORDER BY s.id`, chatID)
+	if chatID <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, sqlListSubscriptions, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: список подписок для %d: %w", chatID, err)
 	}
@@ -225,26 +220,7 @@ type Request struct {
 
 // ListAllRequests возвращает все активные заявки, сначала новые.
 func (s *Store) ListAllRequests(ctx context.Context) ([]Request, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id, s.created_at, u.tg_chat_id,
-		       p.id, p.site, p.external_key, p.url, p.name, p.city,
-		       last.price_kopecks, last.available, last.checked_at,
-		       err.kind, err.occurred_at
-		FROM subscriptions s
-		JOIN users u ON u.id = s.user_id
-		JOIN products p ON p.id = s.product_id
-		LEFT JOIN (
-		    SELECT product_id, price_kopecks, available, checked_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
-		    FROM price_history
-		) last ON last.product_id = p.id AND last.rn = 1
-		LEFT JOIN (
-		    SELECT product_id, kind, occurred_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY occurred_at DESC, id DESC) AS rn
-		    FROM fetch_errors
-		) err ON err.product_id = p.id AND err.rn = 1
-		WHERE s.active = 1
-		ORDER BY s.id DESC`)
+	rows, err := s.db.QueryContext(ctx, sqlListAllRequests)
 	if err != nil {
 		return nil, fmt.Errorf("storage: список заявок: %w", err)
 	}
@@ -270,12 +246,13 @@ func (s *Store) ListAllRequests(ctx context.Context) ([]Request, error) {
 	return out, nil
 }
 
-// DeleteSubscription убирает подписку. Возвращает false, если её не было.
+// DeleteSubscription убирает подписку только у этого пользователя.
+// Чужую ссылку снять нельзя: чужой user_id в условие не попадает.
 func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `
-		DELETE FROM subscriptions
-		WHERE product_id = ?
-		  AND user_id = (SELECT id FROM users WHERE tg_chat_id = ?)`, productID, chatID)
+	if chatID <= 0 || productID <= 0 {
+		return false, nil
+	}
+	res, err := s.db.ExecContext(ctx, sqlDeleteSubscription, productID, chatID)
 	if err != nil {
 		return false, fmt.Errorf("storage: удаление подписки на товар %d: %w", productID, err)
 	}
@@ -286,10 +263,57 @@ func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64)
 	return affected > 0, nil
 }
 
+// DeleteOwnAt снимает n-й товар (номер как в /list, с единицы) только у этого
+// пользователя. total — сколько активных ссылок было до удаления.
+func (s *Store) DeleteOwnAt(ctx context.Context, chatID int64, n int) (Product, int, bool, error) {
+	if chatID <= 0 || n < 1 {
+		return Product{}, 0, false, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Product{}, 0, false, fmt.Errorf("storage: начало транзакции: %w", err)
+	}
+	defer tx.Rollback()
+
+	var total int
+	if err := tx.QueryRowContext(ctx, sqlCountOwnActive, chatID).Scan(&total); err != nil {
+		return Product{}, 0, false, fmt.Errorf("storage: подсчёт подписок для %d: %w", chatID, err)
+	}
+	if n > total {
+		return Product{}, total, false, nil
+	}
+
+	var product Product
+	var subID int64
+	err = tx.QueryRowContext(ctx, sqlOwnAt, chatID, n-1).Scan(
+		&subID, &product.ID, &product.Site, &product.ExternalKey,
+		&product.URL, &product.Name, &product.City)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Product{}, total, false, nil
+		}
+		return Product{}, total, false, fmt.Errorf("storage: номер %d из списка %d: %w", n, chatID, err)
+	}
+
+	res, err := tx.ExecContext(ctx, sqlDeleteOwnSub, subID, chatID)
+	if err != nil {
+		return Product{}, total, false, fmt.Errorf("storage: удаление подписки %d: %w", subID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return Product{}, total, false, fmt.Errorf("storage: результат удаления: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Product{}, total, false, fmt.Errorf("storage: фиксация транзакции: %w", err)
+	}
+	return product, total, affected > 0, nil
+}
+
 // DeleteProductSubscriptions снимает товар со всех чатов. Карточка
 // остаётся в базе, чтобы повторное /add не потеряло историю цен.
 func (s *Store) DeleteProductSubscriptions(ctx context.Context, productID int64) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE product_id = ?`, productID)
+	res, err := s.db.ExecContext(ctx, sqlDeleteProductSubscriptions, productID)
 	if err != nil {
 		return 0, fmt.Errorf("storage: удаление подписок на товар %d: %w", productID, err)
 	}

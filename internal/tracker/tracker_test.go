@@ -21,6 +21,14 @@ func (f *fakeDNS) Fetch(context.Context, storage.Product) (fetch.Snapshot, error
 	return fetch.Snapshot{Name: "Товар", PriceKopecks: f.price, Currency: "RUB", Available: true}, nil
 }
 
+func (f *fakeDNS) Paused() (time.Time, string, bool) { return time.Time{}, "", false }
+
+type pausedFake struct{ fakeDNS }
+
+func (p *pausedFake) Paused() (time.Time, string, bool) {
+	return time.Now().Add(time.Hour), "test", true
+}
+
 type fakeNotify struct {
 	n int
 }
@@ -110,6 +118,22 @@ func TestMinCheckInterval(t *testing.T) {
 	}
 	if siteCheckInterval("ozon") != time.Hour {
 		t.Fatal("ozon должен быть раз в час")
+	}
+}
+
+func TestCycleSiteHonorsPause(t *testing.T) {
+	f := &pausedFake{}
+	tr := New(nil, map[string]Fetcher{"dns": f}, nil, Config{
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+	tr.cycleSite(context.Background(), "dns", true, func(context.Context, string) ([]storage.Product, error) {
+		t.Fatal("при предохранителе список не спрашивают")
+		return nil, nil
+	})
+	if f.calls != 0 {
+		t.Fatalf("fetch вызван %d раз", f.calls)
 	}
 }
 

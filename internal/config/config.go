@@ -25,7 +25,6 @@ var (
 type Config struct {
 	BotToken        string
 	DatabasePath    string
-	CheckInterval   time.Duration // устаревший общий интервал; расписание магазинов в sites.CheckInterval
 	FetchGap        time.Duration
 	FetchPerCycle   int
 	StartupDelay    time.Duration
@@ -60,15 +59,6 @@ func Load() (Config, error) {
 	if !tokenShape.MatchString(cfg.BotToken) {
 		return Config{}, errors.New("config: BOT_TOKEN не похож на токен Telegram")
 	}
-
-	interval, err := time.ParseDuration(envOr("CHECK_INTERVAL", "20m"))
-	if err != nil {
-		return Config{}, fmt.Errorf("config: CHECK_INTERVAL: %w", err)
-	}
-	if interval < 10*time.Minute {
-		return Config{}, fmt.Errorf("config: CHECK_INTERVAL меньше 10 минут (%s): DNS банит за частые запросы", interval)
-	}
-	cfg.CheckInterval = interval
 
 	gap, err := time.ParseDuration(envOr("FETCH_GAP", "45s"))
 	if err != nil {

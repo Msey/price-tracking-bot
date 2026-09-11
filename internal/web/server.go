@@ -7,8 +7,10 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -39,13 +41,44 @@ func New(store *storage.Store, addr string, log *slog.Logger) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func loopbackAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("web: адрес %q: %w", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("web: адрес %q должен быть только на localhost", addr)
+	}
+	return nil
 }
 
 // Start поднимает HTTP и гасит его вместе с контекстом бота.
 // Ошибка привязки к порту не должна ронять Telegram: её только логируем.
 func (s *Server) Start(ctx context.Context) {
-	srv := &http.Server{Addr: s.addr, Handler: s.Handler()}
+	if err := loopbackAddr(s.addr); err != nil {
+		s.log.Error("веб-интерфейс не запущен", "error", err)
+		return
+	}
+	srv := &http.Server{
+		Addr:              s.addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

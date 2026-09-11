@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Msey/price-tracking-bot/internal/sites"
 )
 
 // Breaker на весь сайт: после челленджа или обрыва TLS не ходим на этот
@@ -41,7 +43,19 @@ func circuitFile(profileDir, site string) string {
 	if profileDir == "." || profileDir == "" || site == "" {
 		return ""
 	}
-	return filepath.Join(filepath.Dir(profileDir), "circuit-"+site+".json")
+	dir := filepath.Dir(profileDir)
+	path := filepath.Join(dir, "circuit-"+site+".json")
+	// Раньше Маркет писал circuit-market.json. Пока новый файл не появился,
+	// читаем старый, чтобы пауза не сбросилась после смены ключа.
+	if site == string(sites.YandexMarket) {
+		if _, err := os.Stat(path); err != nil {
+			old := filepath.Join(dir, "circuit-market.json")
+			if _, err := os.Stat(old); err == nil {
+				return old
+			}
+		}
+	}
+	return path
 }
 
 func (b *Breaker) Allow() bool {
