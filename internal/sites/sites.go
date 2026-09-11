@@ -58,7 +58,7 @@ func (s Site) Title() string {
 
 // Supported сообщает, умеем ли мы уже отслеживать цены в этом магазине.
 func (s Site) Supported() bool {
-	return s == DNS || s == YandexMarket
+	return s == DNS || s == YandexMarket || s == Ozon
 }
 
 // dnsProductPath вытаскивает идентификатор товара из пути вида
@@ -72,6 +72,9 @@ var (
 	yandexProductDashPath = regexp.MustCompile(`(?i)^/product--[^/]+/(\d{6,})(?:/|$)`)
 	yandexProductPath     = regexp.MustCompile(`(?i)^/product/(\d{6,})(?:/|$)`)
 	yandexSafeSlug        = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,200}$`)
+	// /product/slug-2422341064 — id всегда хвост пути, чтобы «420» в названии не стал ключом.
+	ozonProductPath = regexp.MustCompile(`(?i)^/product/([^/]*?)(\d{6,})(?:/|$)`)
+	ozonSafeSlug    = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,240}$`)
 )
 
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
@@ -108,6 +111,8 @@ func Parse(raw string) (Ref, error) {
 		return parseDNS(u)
 	case YandexMarket:
 		return parseYandexMarket(u)
+	case Ozon:
+		return parseOzon(u)
 	default:
 		return Ref{}, fmt.Errorf("%w: %s", ErrNotSupported, site.Title())
 	}
@@ -166,13 +171,27 @@ func yandexKeyAndSlug(path string) (key, slug string) {
 	return "", ""
 }
 
+func parseOzon(u *url.URL) (Ref, error) {
+	m := ozonProductPath.FindStringSubmatch(u.EscapedPath())
+	if m == nil {
+		return Ref{}, ErrNotAProduct
+	}
+	key := m[2]
+	slug := strings.TrimSuffix(m[1], "-")
+	canonical := "https://www.ozon.ru/product/" + key
+	if slug != "" && ozonSafeSlug.MatchString(slug) {
+		canonical = "https://www.ozon.ru/product/" + strings.ToLower(slug) + "-" + key
+	}
+	return Ref{Site: Ozon, ExternalKey: key, URL: canonical}, nil
+}
+
 func siteByHost(host string) (Site, bool) {
 	switch host {
 	case "dns-shop.ru", "www.dns-shop.ru":
 		return DNS, true
 	case "wildberries.ru", "www.wildberries.ru":
 		return Wildberries, true
-	case "ozon.ru", "www.ozon.ru":
+	case "ozon.ru", "www.ozon.ru", "m.ozon.ru":
 		return Ozon, true
 	case "market.yandex.ru", "www.market.yandex.ru", "m.market.yandex.ru", "market.yandex.by":
 		return YandexMarket, true

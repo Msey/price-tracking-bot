@@ -18,6 +18,7 @@ type Item struct {
 	ProductID int64
 	Title     string
 	URL       string
+	SiteKey   string
 	Site      string
 	City      string
 	Price     string
@@ -106,6 +107,7 @@ func itemFromRequest(req storage.Request) Item {
 		ProductID: req.Product.ID,
 		Title:     req.Product.Title(),
 		URL:       req.Product.URL,
+		SiteKey:   req.Product.Site,
 		Site:      sites.Site(req.Product.Site).Title(),
 		City:      cityTitle(req.Product.City),
 		Price:     price,

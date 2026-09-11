@@ -26,6 +26,7 @@ type board struct {
 	accent    *walk.SolidColorBrush
 	goldPen   walk.Pen
 	gridPen   walk.Pen
+	icons     map[string]walk.Image
 	onOpen    func(Item)
 }
 
@@ -121,9 +122,23 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		_ = canvas.FillRectanglePixels(fill, row)
 		_ = canvas.FillRectanglePixels(b.accent, walk.Rectangle{X: row.X, Y: row.Y, Width: accentW, Height: row.Height})
 
-		titleBox := walk.Rectangle{X: row.X + pad, Y: row.Y + pad, Width: row.Width - pad*2 - priceW, Height: titleH}
+		textX := row.X + pad
+		if icon := b.icons[item.SiteKey]; icon != nil {
+			iconSize := walk.IntFrom96DPI(28, dpi)
+			iconGap := walk.IntFrom96DPI(10, dpi)
+			iconY := row.Y + pad + (titleH-iconSize)/2
+			if iconY < row.Y+pad {
+				iconY = row.Y + pad
+			}
+			_ = canvas.DrawImageStretchedPixels(icon, walk.Rectangle{
+				X: textX, Y: iconY, Width: iconSize, Height: iconSize,
+			})
+			textX += iconSize + iconGap
+		}
+
+		titleBox := walk.Rectangle{X: textX, Y: row.Y + pad, Width: row.X + row.Width - textX - pad - priceW, Height: titleH}
 		priceBox := walk.Rectangle{X: row.X + row.Width - pad - priceW, Y: row.Y + pad, Width: priceW, Height: titleH}
-		metaBox := walk.Rectangle{X: row.X + pad, Y: row.Y + pad + titleH, Width: row.Width - pad*2, Height: metaH}
+		metaBox := walk.Rectangle{X: textX, Y: row.Y + pad + titleH, Width: row.X + row.Width - textX - pad, Height: metaH}
 
 		_ = canvas.DrawTextPixels(item.Title, b.titleFont, text, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
 		_ = canvas.DrawTextPixels(item.Price, b.priceFont, gold, priceBox, walk.TextRight|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)

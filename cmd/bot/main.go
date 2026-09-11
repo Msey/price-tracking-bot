@@ -72,10 +72,16 @@ func run(log *slog.Logger) error {
 		CircuitCooldown: cfg.CircuitCooldown,
 		Log:             log,
 	})
+	ozon := fetch.NewOzon(fetch.OzonOptions{
+		Browser:         browser,
+		CircuitCooldown: cfg.CircuitCooldown,
+		Log:             log,
+	})
 
 	tr := tracker.New(store, map[string]tracker.Fetcher{
 		string(sites.DNS):          dns,
 		string(sites.YandexMarket): market,
+		string(sites.Ozon):         ozon,
 	}, bot, tracker.Config{
 		Interval:     cfg.CheckInterval,
 		FetchGap:     cfg.FetchGap,
@@ -108,6 +114,7 @@ func run(log *slog.Logger) error {
 			DataPath:    cfg.DatabasePath,
 			Log:         log,
 			StartHidden: startHiddenFromArgs(os.Args[1:]),
+			BotUsername: bot.Username(),
 		})
 		stop()
 		log.Info("бот остановлен")

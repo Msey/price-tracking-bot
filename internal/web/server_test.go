@@ -54,10 +54,27 @@ func TestIndexListsRequests(t *testing.T) {
 		t.Fatalf("код %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Honor MagicBook", "DNS", "Москва", "1001", "отслеживается", "159\u00a0999\u00a0₽", ">заявка<", ">товар<", ">пользователь<"} {
+	for _, want := range []string{"Honor MagicBook", "DNS", "Москва", "1001", "отслеживается", "159\u00a0999\u00a0₽", ">заявка<", ">товар<", ">пользователь<", `class="shop-icon"`, "data:image/png;base64,"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в странице нет %q", want)
 		}
+	}
+}
+
+func TestIndexShowsYandexMarketIcon(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if _, _, err := store.AddSubscription(ctx, 1001, "yandex_market", "4638722913", "https://market.yandex.ru/card/4638722913", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	New(store, "127.0.0.1:0", nil).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Яндекс.Маркет") {
+		t.Fatal("нет названия магазина")
+	}
+	if !strings.Contains(body, `class="shop-icon"`) || !strings.Contains(body, "data:image/png;base64,") {
+		t.Fatal("нет иконки Яндекс.Маркета")
 	}
 }
 

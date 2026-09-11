@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/lxn/walk"
 	ui "github.com/lxn/walk/declarative"
@@ -156,6 +157,20 @@ func Run(ctx context.Context, opt Options) error {
 		},
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
+	a.board.icons = map[string]walk.Image{}
+	for _, site := range sites.SitesWithIcons() {
+		img := siteImage(site)
+		if img == nil {
+			continue
+		}
+		bmp, err := walk.NewBitmapFromImage(img)
+		if err != nil {
+			opt.Log.Warn("иконка магазина", "site", site, "error", err)
+			continue
+		}
+		a.board.icons[string(site)] = bmp
+		defer bmp.Dispose()
+	}
 
 	muted := walk.RGB(154, 141, 122)
 	gold := walk.RGB(226, 182, 87)
@@ -235,6 +250,11 @@ func Run(ctx context.Context, opt Options) error {
 	})
 	if err := addTrayAction(ni, "Открыть окно", a.showWindow); err != nil {
 		return err
+	}
+	if link := telegramBotURL(opt.BotUsername); link != "" {
+		if err := addTrayAction(ni, "Открыть в Telegram", func() { openURL(link) }); err != nil {
+			return err
+		}
 	}
 	if err := addTrayAction(ni, "Обновить список", func() { a.refresh(false) }); err != nil {
 		return err

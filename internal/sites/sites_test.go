@@ -208,6 +208,118 @@ func TestParseYandexCanonicalHasNoUserPayload(t *testing.T) {
 	}
 }
 
+func TestParseOzon(t *testing.T) {
+	const (
+		productURL = "https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064"
+		canonical  = "https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064"
+		key        = "2422341064"
+	)
+	tests := []struct {
+		name string
+		in   string
+		url  string
+	}{
+		{"обычная ссылка", productURL, canonical},
+		{"utm отбрасываются", productURL + "?from=share&utm_source=telegram", canonical},
+		{"фрагмент отбрасывается", productURL + "#reviews", canonical},
+		{"без www", "https://ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064", canonical},
+		{"мобильный хост", "https://m.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064", canonical},
+		{"со слешем", productURL + "/", canonical},
+		{"как прислали из приложения", "https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064/", canonical},
+		{"без slug", "https://www.ozon.ru/product/2422341064", "https://www.ozon.ru/product/2422341064"},
+		{"внутри текста", "вот " + productURL + " глянь", canonical},
+		{"заглавные в slug", "https://www.ozon.ru/product/Germetik-Akrilovyy-Moment-420-gr-Belyy-Universalnyy-Morozostoykiy-2422341064", canonical},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, err := Parse(tt.in)
+			if err != nil {
+				t.Fatalf("Parse(%q) вернул ошибку: %v", tt.in, err)
+			}
+			if ref.Site != Ozon {
+				t.Errorf("Site = %q, ожидался %q", ref.Site, Ozon)
+			}
+			if ref.ExternalKey != key {
+				t.Errorf("ExternalKey = %q, ожидался %q", ref.ExternalKey, key)
+			}
+			if ref.URL != tt.url {
+				t.Errorf("URL = %q, ожидался %q", ref.URL, tt.url)
+			}
+		})
+	}
+}
+
+func TestParseOzonDoesNotTakeGramsAsID(t *testing.T) {
+	ref, err := Parse("https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.ExternalKey == "420" {
+		t.Fatal("взяли «420» из названия, а не id товара")
+	}
+	if ref.ExternalKey != "2422341064" {
+		t.Fatalf("ExternalKey = %q", ref.ExternalKey)
+	}
+}
+
+func TestParseOzonIsStable(t *testing.T) {
+	variants := []string{
+		"https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064",
+		"https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064/?from=share",
+		"https://ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064",
+	}
+	first, err := Parse(variants[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range variants[1:] {
+		ref, err := Parse(v)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", v, err)
+		}
+		if ref.ExternalKey != first.ExternalKey || ref.URL != first.URL {
+			t.Errorf("Parse(%q) = %+v, ожидалось %+v", v, ref, first)
+		}
+	}
+}
+
+func TestParseOzonRejectsHostTricks(t *testing.T) {
+	const path = "/product/germetik-2422341064"
+	tests := []struct {
+		name string
+		in   string
+		want error
+	}{
+		{"чужой поддомен", "https://evil.ozon.ru" + path, ErrUnknownSite},
+		{"хост с суффиксом", "https://notozon.ru" + path, ErrUnknownSite},
+		{"userinfo", "https://evil@www.ozon.ru" + path, ErrNotALink},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(tt.in)
+			if !errors.Is(err, tt.want) {
+				t.Errorf("Parse(%q) вернул %v, ожидалась %v", tt.in, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseOzonCanonicalHasNoUserPayload(t *testing.T) {
+	ref, err := Parse(`https://www.ozon.ru/product/foo!onclick=alert-2422341064`)
+	if err != nil {
+		t.Fatalf("Parse вернул ошибку: %v", err)
+	}
+	if strings.ContainsAny(ref.URL, `"<>!`) {
+		t.Errorf("канонический URL содержит лишние символы: %q", ref.URL)
+	}
+	if ref.ExternalKey != "2422341064" {
+		t.Errorf("ExternalKey = %q", ref.ExternalKey)
+	}
+	if ref.URL != "https://www.ozon.ru/product/2422341064" {
+		t.Errorf("небезопасный slug не должен попасть в канон: %q", ref.URL)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -219,7 +331,9 @@ func TestParseErrors(t *testing.T) {
 		{"не http", "ftp://www.dns-shop.ru/product/9ee3a4f41358d9cb/x/", ErrNotALink},
 		{"неизвестный магазин", "https://example.com/product/123/", ErrUnknownSite},
 		{"wildberries пока не умеем", "https://www.wildberries.ru/catalog/12345/detail.aspx", ErrNotSupported},
-		{"ozon пока не умеем", "https://www.ozon.ru/product/noutbuk-123456/", ErrNotSupported},
+		{"главная ozon", "https://www.ozon.ru/", ErrNotAProduct},
+		{"категория ozon", "https://www.ozon.ru/category/germetiki-12345/", ErrNotAProduct},
+		{"короткий id ozon", "https://www.ozon.ru/product/noutbuk-123/", ErrNotAProduct},
 		{"короткий id маркета", "https://market.yandex.ru/product--noutbuk/123", ErrNotAProduct},
 		{"главная маркета", "https://market.yandex.ru/", ErrNotAProduct},
 		{"главная страница dns", "https://www.dns-shop.ru/", ErrNotAProduct},

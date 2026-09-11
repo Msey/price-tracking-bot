@@ -64,6 +64,8 @@
   .bad { background: #3a1c18; color: var(--bad); }
   .empty { padding: 48px 20px; text-align: center; color: var(--muted); }
   .empty strong { display: block; color: var(--text); font-size: 18px; margin-bottom: 8px; }
+  .shop { display: flex; align-items: flex-start; gap: 8px; }
+  .shop-icon { width: 22px; height: 22px; border-radius: 6px; flex: none; background: #111; }
 </style>
 </head>
 <body>
@@ -100,7 +102,12 @@
           <a href="{{.URL}}" target="_blank" rel="noopener">{{.Title}}</a>
           <div class="muted mono">{{.ExternalKey}}</div>
         </td>
-        <td>{{.Site}}<div class="muted">{{.City}}</div></td>
+        <td>
+          <div class="shop">
+            {{if .SiteIcon}}<img class="shop-icon" src="{{.SiteIcon}}" alt="" width="22" height="22">{{end}}
+            <div>{{.Site}}<div class="muted">{{.City}}</div></div>
+          </div>
+        </td>
         <td class="price">{{.Price}}</td>
         <td><span class="badge {{.StatusClass}}">{{.Status}}</span></td>
         <td class="muted">{{.Checked}}</td>

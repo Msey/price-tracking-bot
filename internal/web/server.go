@@ -4,6 +4,7 @@ package web
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"html/template"
 	"log/slog"
@@ -73,6 +74,7 @@ type rowView struct {
 	URL         string
 	ExternalKey string
 	Site        string
+	SiteIcon    template.URL
 	City        string
 	Price       string
 	Status      string
@@ -162,6 +164,7 @@ func viewOf(req storage.Request) rowView {
 		URL:         req.Product.URL,
 		ExternalKey: req.Product.ExternalKey,
 		Site:        sites.Site(req.Product.Site).Title(),
+		SiteIcon:    siteIconDataURI(req.Product.Site),
 		City:        cityTitle(req.Product.City),
 		Price:       price,
 		Status:      status,
@@ -186,6 +189,14 @@ func statusOf(req storage.Request) (string, string) {
 		return "нет в наличии", "bad"
 	}
 	return "отслеживается", "ok"
+}
+
+func siteIconDataURI(site string) template.URL {
+	raw := sites.IconPNG(sites.Site(site))
+	if len(raw) == 0 {
+		return ""
+	}
+	return template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(raw))
 }
 
 func cityTitle(city string) string {

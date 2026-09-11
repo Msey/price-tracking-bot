@@ -12,4 +12,6 @@ type Options struct {
 	DataPath    string
 	Log         *slog.Logger
 	StartHidden bool
+	// BotUsername — @имя бота без собаки, для ссылки t.me в меню трея.
+	BotUsername string
 }
