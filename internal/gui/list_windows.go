@@ -10,7 +10,7 @@ import (
 	"github.com/lxn/walk"
 )
 
-const rowHeight96 = 148
+const rowHeight96 = 74 // компактная строка: в окне видно примерно вдвое больше товаров
 
 type board struct {
 	widget     *walk.CustomWidget
@@ -28,7 +28,11 @@ type board struct {
 	row        *walk.SolidColorBrush
 	rowHot     *walk.SolidColorBrush
 	accent     *walk.SolidColorBrush
+	upBrush    *walk.SolidColorBrush
+	downBrush  *walk.SolidColorBrush
 	goldPen    walk.Pen
+	upPen      walk.Pen
+	downPen    walk.Pen
 	gridPen    walk.Pen
 	icons      map[string]walk.Image
 	trash      walk.Image
@@ -133,8 +137,8 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 
 		textX := row.X + pad
 		if icon := b.icons[item.SiteKey]; icon != nil {
-			iconSize := walk.IntFrom96DPI(28, dpi)
-			iconGap := walk.IntFrom96DPI(10, dpi)
+			iconSize := walk.IntFrom96DPI(16, dpi)
+			iconGap := walk.IntFrom96DPI(6, dpi)
 			iconY := row.Y + pad + (titleH-iconSize)/2
 			if iconY < row.Y+pad {
 				iconY = row.Y + pad
@@ -175,15 +179,17 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			for j, p := range pts {
 				wpts[j] = walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y}
 			}
-			if b.goldPen != nil {
-				_ = canvas.DrawPolylinePixels(b.goldPen, wpts)
+			for j := 1; j < len(wpts) && j < len(item.Points); j++ {
+				if pen := b.sparkPen(item.Points[j-1], item.Points[j]); pen != nil {
+					_ = canvas.DrawLinePixels(pen, wpts[j-1], wpts[j])
+				}
 			}
 			if i == b.tipItem {
 				tip = &tipGeom{chart: chart, pts: wpts}
 			}
 
-			nodeR := walk.IntFrom96DPI(3, dpi)
-			hotR := walk.IntFrom96DPI(5, dpi)
+			nodeR := walk.IntFrom96DPI(2, dpi)
+			hotR := walk.IntFrom96DPI(3, dpi)
 			// Подпись — только на смене цены. Одинаковые узлы подряд без
 			// ценника: иначе плато из десятков замеров забивает график одним
 			// и тем же числом. Близкие разные цены по-прежнему не наезжают
@@ -195,8 +201,12 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 				if hot {
 					r = hotR
 				}
-				if b.accent != nil {
-					_ = canvas.FillEllipsePixels(b.accent, walk.Rectangle{
+				brush := b.accent
+				if j > 0 && j < len(item.Points) {
+					brush = b.sparkNode(item.Points[j-1], item.Points[j])
+				}
+				if brush != nil {
+					_ = canvas.FillEllipsePixels(brush, walk.Rectangle{
 						X: p.X - r, Y: p.Y - r, Width: r*2 + 1, Height: r*2 + 1,
 					})
 				}
@@ -234,20 +244,20 @@ func (b *board) metrics() boardMetrics {
 	dpi := b.dpi()
 	return boardMetrics{
 		dpi:     dpi,
-		pad:     walk.IntFrom96DPI(16, dpi),
-		titleH:  walk.IntFrom96DPI(24, dpi),
-		metaH:   walk.IntFrom96DPI(18, dpi),
-		chartH:  walk.IntFrom96DPI(72, dpi),
-		accentW: walk.IntFrom96DPI(4, dpi),
-		priceW:  walk.IntFrom96DPI(168, dpi),
-		gap:     walk.IntFrom96DPI(8, dpi),
+		pad:     walk.IntFrom96DPI(8, dpi),
+		titleH:  walk.IntFrom96DPI(16, dpi),
+		metaH:   walk.IntFrom96DPI(12, dpi),
+		chartH:  walk.IntFrom96DPI(32, dpi),
+		accentW: walk.IntFrom96DPI(3, dpi),
+		priceW:  walk.IntFrom96DPI(140, dpi),
+		gap:     walk.IntFrom96DPI(4, dpi),
 		rowH:    walk.IntFrom96DPI(rowHeight96, dpi),
-		trash:   walk.IntFrom96DPI(28, dpi),
+		trash:   walk.IntFrom96DPI(20, dpi),
 	}
 }
 
 func (m boardMetrics) rowRect(width, y int) walk.Rectangle {
-	return walk.Rectangle{X: 0, Y: y, Width: width, Height: m.rowH - walk.IntFrom96DPI(6, m.dpi)}
+	return walk.Rectangle{X: 0, Y: y, Width: width, Height: m.rowH - walk.IntFrom96DPI(4, m.dpi)}
 }
 
 func (m boardMetrics) chartRect(row walk.Rectangle) walk.Rectangle {
@@ -273,6 +283,34 @@ func (m boardMetrics) trashRect(row walk.Rectangle) walk.Rectangle {
 
 func rectContains(r walk.Rectangle, x, y int) bool {
 	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
+}
+
+func (b *board) sparkPen(from, to int64) walk.Pen {
+	switch priceMove(from, to) {
+	case -1:
+		if b.downPen != nil {
+			return b.downPen
+		}
+	case 1:
+		if b.upPen != nil {
+			return b.upPen
+		}
+	}
+	return b.goldPen
+}
+
+func (b *board) sparkNode(from, to int64) *walk.SolidColorBrush {
+	switch priceMove(from, to) {
+	case -1:
+		if b.downBrush != nil {
+			return b.downBrush
+		}
+	case 1:
+		if b.upBrush != nil {
+			return b.upBrush
+		}
+	}
+	return b.accent
 }
 
 // nodePriceBox — место для ценника узла: над точкой, а если сверху не

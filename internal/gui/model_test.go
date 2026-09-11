@@ -96,6 +96,18 @@ func TestNodeSlots(t *testing.T) {
 	}
 }
 
+func TestPriceMove(t *testing.T) {
+	if priceMove(100, 90) != -1 {
+		t.Fatal("падение")
+	}
+	if priceMove(90, 120) != 1 {
+		t.Fatal("рост")
+	}
+	if priceMove(50, 50) != 0 {
+		t.Fatal("без изменения")
+	}
+}
+
 func TestFirstPriceLabel(t *testing.T) {
 	prices := []int64{100, 100, 100, 90, 90, 120}
 	want := []bool{true, false, false, true, false, true}

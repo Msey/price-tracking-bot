@@ -73,6 +73,19 @@ func hitSample(width, n, x int) int {
 	return i
 }
 
+// priceMove — направление от одного замера к следующему:
+// −1 падение, 0 без изменения, +1 рост.
+func priceMove(from, to int64) int {
+	switch {
+	case to < from:
+		return -1
+	case to > from:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // firstPriceLabel — писать цену только на первом узле группы с одной
 // ценой. Пока цена не сменилась, остальные точки остаются без подписи.
 func firstPriceLabel(prices []int64, i int) bool {

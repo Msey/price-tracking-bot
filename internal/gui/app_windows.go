@@ -127,17 +127,17 @@ func Run(ctx context.Context, opt Options) error {
 	keep := func(d walk.Disposable) { owned = append(owned, d) }
 	defer releaseInstance()
 
-	titleFont, err := walk.NewFont("Segoe UI", 12, walk.FontBold)
+	titleFont, err := walk.NewFont("Segoe UI", 10, walk.FontBold)
 	if err != nil {
 		return err
 	}
 	keep(titleFont)
-	metaFont, err := walk.NewFont("Segoe UI", 9, 0)
+	metaFont, err := walk.NewFont("Segoe UI", 8, 0)
 	if err != nil {
 		return err
 	}
 	keep(metaFont)
-	priceFont, err := walk.NewFont("Segoe UI", 14, walk.FontBold)
+	priceFont, err := walk.NewFont("Segoe UI", 11, walk.FontBold)
 	if err != nil {
 		return err
 	}
@@ -178,6 +178,26 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(goldPen)
+	downBrush, err := walk.NewSolidColorBrush(walk.RGB(232, 86, 74))
+	if err != nil {
+		return err
+	}
+	keep(downBrush)
+	downPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, downBrush)
+	if err != nil {
+		return err
+	}
+	keep(downPen)
+	upBrush, err := walk.NewSolidColorBrush(walk.RGB(160, 222, 140))
+	if err != nil {
+		return err
+	}
+	keep(upBrush)
+	upPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, upBrush)
+	if err != nil {
+		return err
+	}
+	keep(upPen)
 
 	icon, err := walk.NewIconFromImage(trayImage())
 	if err != nil {
@@ -202,7 +222,11 @@ func Run(ctx context.Context, opt Options) error {
 			row:       row,
 			rowHot:    rowSel,
 			accent:    accent,
+			upBrush:   upBrush,
+			downBrush: downBrush,
 			goldPen:   goldPen,
+			upPen:     upPen,
+			downPen:   downPen,
 			gridPen:   gridPen,
 			hover:     -1,
 			tipItem:   -1,
