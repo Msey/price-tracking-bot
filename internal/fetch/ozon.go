@@ -114,7 +114,7 @@ func (o *Ozon) Fetch(_ context.Context, p storage.Product) (Snapshot, error) {
 }
 
 func (o *Ozon) maybeTrip(err error) {
-	if err == nil {
+	if err == nil || isChromeStartError(err) {
 		return
 	}
 	// Челлендж Ozon часто проходит в том же окне Chrome. Не глушим весь

@@ -100,6 +100,14 @@ func hardBlocked(p pageBits) bool {
 		strings.Contains(t, "not a robot")
 }
 
+// needsHuman — на странице капча или антибот, без человека дальше не прочитать цену.
+func needsHuman(p pageBits, parseErr error) bool {
+	if p.QRATOR || p.Challenge || hardBlocked(p) {
+		return true
+	}
+	return errors.Is(parseErr, ErrChallenge)
+}
+
 func extractLDJSON(html string) []string {
 	matches := ldJSONRe.FindAllStringSubmatch(html, -1)
 	out := make([]string, 0, len(matches))

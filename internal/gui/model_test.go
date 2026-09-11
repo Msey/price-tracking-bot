@@ -3,9 +3,23 @@ package gui
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
+
+func TestFormatWhenFull(t *testing.T) {
+	raw := "2026-09-11 05:40:00"
+	parsed, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := formatWhenFull(raw)
+	want := parsed.Local().Format("02.01.06 15:04")
+	if got != want {
+		t.Fatalf("formatWhenFull = %q, ожидалось %q", got, want)
+	}
+}
 
 func TestGroupRequestsDedupsProduct(t *testing.T) {
 	p := storage.Product{ID: 7, Site: "dns", Name: "Honor", URL: "https://www.dns-shop.ru/product/aa/", City: "moscow"}
@@ -62,12 +76,12 @@ func TestSparkline(t *testing.T) {
 	if sparkline(0, 10, []int64{1}) != nil {
 		t.Fatal("нулевая ширина")
 	}
-	pts := sparkline(100, 40, []int64{100, 200, 150})
+	pts := sparkline(90, 40, []int64{100, 200, 150})
 	if len(pts) != 3 {
 		t.Fatalf("точек %d", len(pts))
 	}
-	if pts[0].X != 0 || pts[2].X != 99 {
-		t.Errorf("x: %v", pts)
+	if pts[0].X != 15 || pts[1].X != 45 || pts[2].X != 75 {
+		t.Errorf("три узла должны стоять на третях: %v", pts)
 	}
 	if pts[1].Y >= pts[0].Y {
 		t.Errorf("пик должен быть выше: %v", pts)
@@ -75,5 +89,17 @@ func TestSparkline(t *testing.T) {
 	flat := sparkline(20, 10, []int64{5, 5, 5})
 	if len(flat) != 3 || flat[0].Y != flat[2].Y {
 		t.Errorf("плоский: %v", flat)
+	}
+}
+
+func TestNodeSlots(t *testing.T) {
+	if nodeX(100, 3, 0) != 16 || nodeX(100, 3, 1) != 50 || nodeX(100, 3, 2) != 83 {
+		t.Fatalf("трети: %d %d %d", nodeX(100, 3, 0), nodeX(100, 3, 1), nodeX(100, 3, 2))
+	}
+	if nodeX(100, 10, 0) != 5 || nodeX(100, 10, 9) != 95 {
+		t.Fatalf("десятые: %d %d", nodeX(100, 10, 0), nodeX(100, 10, 9))
+	}
+	if hitSample(90, 3, 0) != 0 || hitSample(90, 3, 30) != 1 || hitSample(90, 3, 89) != 2 {
+		t.Fatalf("попадание: %d %d %d", hitSample(90, 3, 0), hitSample(90, 3, 30), hitSample(90, 3, 89))
 	}
 }

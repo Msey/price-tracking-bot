@@ -1,0 +1,33 @@
+package fetch
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestNewBrowserUsesAbsoluteProfile(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: "data/chrome-profile"})
+	if !filepath.IsAbs(b.profileDir) {
+		t.Fatalf("профиль должен быть абсолютным, получено %q", b.profileDir)
+	}
+	if !strings.Contains(filepath.ToSlash(b.profileDir), "data/chrome-profile") {
+		t.Fatalf("профиль %q", b.profileDir)
+	}
+}
+
+func TestDecodeProcessOutputCP1251(t *testing.T) {
+	raw := "chrome failed to start:\n" + string([]byte{
+		0xce, 0xea, 0xed, 0xee, 0x20, 0xe8, 0xeb, 0xe8, 0x20, 0xe2, 0xea, 0xeb, 0xe0, 0xe4, 0xea, 0xe0,
+		0x20, 0xee, 0xf2, 0xea, 0xf0, 0xee, 0xfe, 0xf2, 0xf1, 0xff, 0x20, 0xe2, 0x20, 0xf2, 0xe5, 0xea,
+		0xf3, 0xf9, 0xe5, 0xec, 0x20, 0xf1, 0xe5, 0xe0, 0xed, 0xf1, 0xe5, 0x20, 0xe1, 0xf0, 0xe0, 0xf3,
+		0xe7, 0xe5, 0xf0, 0xe0, 0x2e,
+	})
+	got := decodeProcessOutput(raw)
+	if !strings.Contains(got, "текущем сеансе") {
+		t.Fatalf("не раскодировали вывод Chrome: %q", got)
+	}
+	if !looksLikeExistingSession(got) {
+		t.Fatal("не узнали чужой сеанс Chrome")
+	}
+}

@@ -3,8 +3,8 @@ package gui
 // point — пиксель графика.
 type point struct{ X, Y int }
 
-// sparkline раскладывает цены по прямоугольнику. Пустой срез или нулевая
-// область дают nil — вызывающий рисует заглушку.
+// sparkline раскладывает цены по прямоугольнику. Узлы стоят по центру
+// равных долей ширины: три точки — на каждой трети, десять — на каждой десятой.
 func sparkline(width, height int, prices []int64) []point {
 	if width < 2 || height < 2 || len(prices) == 0 {
 		return nil
@@ -28,14 +28,41 @@ func sparkline(width, height int, prices []int64) []point {
 	}
 	usable := bottom - top
 	out := make([]point, len(prices))
-	if len(prices) == 1 {
-		out[0] = point{X: width / 2, Y: top + usable/2}
-		return out
-	}
-	dx := float64(width-1) / float64(len(prices)-1)
 	for i, p := range prices {
 		y := bottom - int(float64(p-min)/float64(span)*float64(usable))
-		out[i] = point{X: int(float64(i) * dx), Y: y}
+		out[i] = point{X: nodeX(width, len(prices), i), Y: y}
 	}
 	return out
+}
+
+// nodeX — центр i-й доли контрола шириной width при n узлах.
+func nodeX(width, n, i int) int {
+	if n < 1 || width < 1 {
+		return 0
+	}
+	if i < 0 {
+		i = 0
+	}
+	if i >= n {
+		i = n - 1
+	}
+	return (i*2 + 1) * width / (2 * n)
+}
+
+// hitSample возвращает индекс доли под координатой x.
+func hitSample(width, n, x int) int {
+	if n < 1 || width < 1 {
+		return -1
+	}
+	if x < 0 {
+		x = 0
+	}
+	if x >= width {
+		x = width - 1
+	}
+	i := x * n / width
+	if i >= n {
+		return n - 1
+	}
+	return i
 }

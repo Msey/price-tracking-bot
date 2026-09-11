@@ -91,6 +91,18 @@ func TestHardBlockedTitle(t *testing.T) {
 	}
 }
 
+func TestNeedsHuman(t *testing.T) {
+	if !needsHuman(pageBits{Challenge: true}, ErrNoPrice) {
+		t.Fatal("капча должна звать человека")
+	}
+	if !needsHuman(pageBits{}, ErrChallenge) {
+		t.Fatal("ErrChallenge должен звать человека")
+	}
+	if needsHuman(pageBits{Title: "Товар"}, ErrNoPrice) {
+		t.Fatal("обычная страница без цены — не капча")
+	}
+}
+
 func TestHasClassDoesNotMatchWrap(t *testing.T) {
 	if hasClass("product-buy__price-wrap product-buy__price-wrap_interactive", "product-buy__price") {
 		t.Fatal("wrap не должен считаться ценой")

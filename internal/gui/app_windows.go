@@ -74,19 +74,21 @@ func releaseInstance() {
 }
 
 type app struct {
-	store     *storage.Store
-	dataPath  string
-	log       *slog.Logger
-	mw        *walk.MainWindow
-	board     *board
-	status    *walk.Label
-	ni        *walk.NotifyIcon
-	items     []Item
-	allowQuit bool
-	loaded    bool
-	checkNow  func()
-	checkBusy func() bool
-	checkBtn  *walk.PushButton
+	store       *storage.Store
+	dataPath    string
+	log         *slog.Logger
+	mw          *walk.MainWindow
+	board       *board
+	status      *walk.Label
+	ni          *walk.NotifyIcon
+	items       []Item
+	allowQuit   bool
+	loaded      bool
+	checkNow    func()
+	checkBusy   func() bool
+	checkStatus func() string
+	checkBtn    *walk.PushButton
+	captchaTold bool
 }
 
 func Run(ctx context.Context, opt Options) error {
@@ -144,11 +146,12 @@ func Run(ctx context.Context, opt Options) error {
 	}
 
 	a := &app{
-		store:     opt.Store,
-		dataPath:  opt.DataPath,
-		log:       opt.Log,
-		checkNow:  opt.CheckNow,
-		checkBusy: opt.CheckBusy,
+		store:       opt.Store,
+		dataPath:    opt.DataPath,
+		log:         opt.Log,
+		checkNow:    opt.CheckNow,
+		checkBusy:   opt.CheckBusy,
+		checkStatus: opt.CheckStatus,
 		board: &board{
 			titleFont: titleFont,
 			metaFont:  metaFont,
@@ -159,6 +162,9 @@ func Run(ctx context.Context, opt Options) error {
 			accent:    accent,
 			goldPen:   goldPen,
 			gridPen:   gridPen,
+			hover:     -1,
+			tipItem:   -1,
+			tipNode:   -1,
 		},
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
@@ -345,6 +351,25 @@ func (a *app) checkRunning() bool {
 	return a.checkBusy != nil && a.checkBusy()
 }
 
+func (a *app) checkMessage() string {
+	if a.checkStatus == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.checkStatus())
+}
+
+func (a *app) noteCaptcha(msg string) {
+	if !strings.Contains(strings.ToLower(msg), "капч") {
+		a.captchaTold = false
+		return
+	}
+	if a.captchaTold || a.ni == nil {
+		return
+	}
+	a.captchaTold = true
+	_ = a.ni.ShowInfo("Нужна капча", "Откройте окно Chrome и пройдите проверку. Бот подождёт несколько минут.")
+}
+
 func (a *app) updateCheckUI() {
 	if a.checkBtn == nil {
 		return
@@ -459,7 +484,10 @@ func (a *app) refresh(notify bool) {
 	a.loaded = true
 	if a.status != nil {
 		n := len(items)
-		if a.checkRunning() {
+		if msg := a.checkMessage(); msg != "" {
+			_ = a.status.SetText(msg)
+			a.noteCaptcha(msg)
+		} else if a.checkRunning() {
 			_ = a.status.SetText("Идёт проверка цен · " +
 				fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
 				" · автоцикл начнётся заново после неё")

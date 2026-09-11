@@ -27,13 +27,23 @@ type Item struct {
 	Checked   string
 	Watchers  int
 	Points    []int64
+	Samples   []Sample
+}
+
+// Sample — один замер цены на графике.
+type Sample struct {
+	Price int64
+	When  string
 }
 
 func (it Item) fingerprint() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%d", it.ProductID, it.Title, it.Price, it.Status, it.Checked, it.Watchers)
-	for _, p := range it.Points {
+	for i, p := range it.Points {
 		fmt.Fprintf(&b, "|%d", p)
+		if i < len(it.Samples) {
+			fmt.Fprintf(&b, "@%s", it.Samples[i].When)
+		}
 	}
 	return b.String()
 }
@@ -64,10 +74,13 @@ func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
 	for i := range grouped {
 		rows := hist[grouped[i].ProductID]
 		pts := make([]int64, 0, len(rows))
+		samples := make([]Sample, 0, len(rows))
 		for _, row := range rows {
 			pts = append(pts, row.PriceKopecks)
+			samples = append(samples, Sample{Price: row.PriceKopecks, When: formatWhenFull(row.CheckedAt)})
 		}
 		grouped[i].Points = pts
+		grouped[i].Samples = samples
 	}
 	return grouped, nil
 }
@@ -152,6 +165,18 @@ func formatWhen(raw string) string {
 		return raw
 	}
 	return t.Local().Format("02.01.2006 15:04")
+}
+
+func formatWhenFull(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "—"
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
+	if err != nil {
+		return raw
+	}
+	return t.Local().Format("02.01.06 15:04")
 }
 
 func ruPlural(n int, one, few, many string) string {

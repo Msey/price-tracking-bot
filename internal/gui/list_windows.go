@@ -5,16 +5,19 @@ package gui
 import (
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/lxn/walk"
 )
 
-const rowHeight96 = 128
+const rowHeight96 = 148
 
 type board struct {
 	widget    *walk.CustomWidget
 	items     []Item
 	scroll    int
 	hover     int
+	tipItem   int
+	tipNode   int
 	lastClick time.Time
 	lastIdx   int
 	titleFont *walk.Font
@@ -35,6 +38,9 @@ func (b *board) setItems(next []Item) {
 		return
 	}
 	b.items = next
+	if b.tipItem >= len(b.items) {
+		b.tipItem, b.tipNode = -1, -1
+	}
 	b.clampScroll()
 	if b.widget != nil {
 		b.widget.Invalidate()
@@ -50,7 +56,7 @@ func (b *board) rowH() int {
 	}
 	h := walk.IntFrom96DPI(rowHeight96, dpi)
 	if h < 96 {
-		return 128
+		return 148
 	}
 	return h
 }
@@ -81,18 +87,10 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 	}
 	bounds := b.widget.ClientBoundsPixels()
 	_ = canvas.FillRectanglePixels(b.bg, bounds)
-	dpi := b.widget.DPI()
-	if dpi < 96 {
-		dpi = 96
-	}
-	pad := walk.IntFrom96DPI(16, dpi)
-	titleH := walk.IntFrom96DPI(24, dpi)
-	metaH := walk.IntFrom96DPI(18, dpi)
-	chartH := walk.IntFrom96DPI(58, dpi)
-	accentW := walk.IntFrom96DPI(4, dpi)
-	priceW := walk.IntFrom96DPI(168, dpi)
-	gap := walk.IntFrom96DPI(8, dpi)
-	rowH := b.rowH()
+	m := b.metrics()
+	pad, titleH, metaH := m.pad, m.titleH, m.metaH
+	accentW, priceW, rowH := m.accentW, m.priceW, m.rowH
+	dpi := m.dpi
 
 	text := walk.RGB(243, 234, 220)
 	muted := walk.RGB(154, 141, 122)
@@ -114,7 +112,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			break
 		}
 		item := b.items[i]
-		row := walk.Rectangle{X: 0, Y: y, Width: bounds.Width, Height: rowH - walk.IntFrom96DPI(6, dpi)}
+		row := m.rowRect(bounds.Width, y)
 		fill := b.row
 		if i == b.hover {
 			fill = b.rowHot
@@ -152,12 +150,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		}
 		_ = canvas.DrawTextPixels(meta, b.metaFont, muted, metaBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
 
-		chart := walk.Rectangle{
-			X:      row.X + pad,
-			Y:      row.Y + pad + titleH + metaH + gap/2,
-			Width:  row.Width - pad*2,
-			Height: chartH,
-		}
+		chart := m.chartRect(row)
 		_ = canvas.FillRectanglePixels(b.bg, chart)
 		if b.gridPen != nil {
 			mid := chart.Y + chart.Height/2
@@ -175,12 +168,208 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		if b.goldPen != nil {
 			_ = canvas.DrawPolylinePixels(b.goldPen, wpts)
 		}
+		nodeR := walk.IntFrom96DPI(3, dpi)
+		hotR := walk.IntFrom96DPI(5, dpi)
+		for j, p := range wpts {
+			r := nodeR
+			if i == b.tipItem && j == b.tipNode {
+				r = hotR
+			}
+			if b.accent != nil {
+				_ = canvas.FillEllipsePixels(b.accent, walk.Rectangle{
+					X: p.X - r, Y: p.Y - r, Width: r*2 + 1, Height: r*2 + 1,
+				})
+			}
+			if j < len(item.Samples) {
+				b.paintNodePrice(canvas, chart, p, money.FormatKopecks(item.Samples[j].Price), r, m)
+			}
+		}
 	}
+	b.paintTip(canvas, bounds, m)
 	return nil
+}
+
+type boardMetrics struct {
+	dpi, pad, titleH, metaH, chartH, accentW, priceW, gap, rowH int
+}
+
+func (b *board) metrics() boardMetrics {
+	dpi := 96
+	if b.widget != nil {
+		if d := b.widget.DPI(); d >= 96 {
+			dpi = d
+		}
+	}
+	return boardMetrics{
+		dpi:     dpi,
+		pad:     walk.IntFrom96DPI(16, dpi),
+		titleH:  walk.IntFrom96DPI(24, dpi),
+		metaH:   walk.IntFrom96DPI(18, dpi),
+		chartH:  walk.IntFrom96DPI(72, dpi),
+		accentW: walk.IntFrom96DPI(4, dpi),
+		priceW:  walk.IntFrom96DPI(168, dpi),
+		gap:     walk.IntFrom96DPI(8, dpi),
+		rowH:    b.rowH(),
+	}
+}
+
+func (m boardMetrics) rowRect(width, y int) walk.Rectangle {
+	return walk.Rectangle{X: 0, Y: y, Width: width, Height: m.rowH - walk.IntFrom96DPI(6, m.dpi)}
+}
+
+func (m boardMetrics) chartRect(row walk.Rectangle) walk.Rectangle {
+	return walk.Rectangle{
+		X:      row.X + m.pad,
+		Y:      row.Y + m.pad + m.titleH + m.metaH + m.gap/2,
+		Width:  row.Width - m.pad*2,
+		Height: m.chartH,
+	}
+}
+
+func (b *board) paintNodePrice(canvas *walk.Canvas, chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) {
+	if price == "" || b.metaFont == nil {
+		return
+	}
+	sz := measureLine(canvas, b.metaFont, price)
+	if sz.Width < 1 {
+		return
+	}
+	gap := walk.IntFrom96DPI(4, m.dpi)
+	lx := p.X - sz.Width/2
+	ly := p.Y - nodeR - gap - sz.Height
+	if ly < chart.Y {
+		ly = p.Y + nodeR + gap
+	}
+	if lx < chart.X {
+		lx = chart.X
+	}
+	if lx+sz.Width > chart.X+chart.Width {
+		lx = chart.X + chart.Width - sz.Width
+	}
+	_ = canvas.DrawTextPixels(price, b.metaFont, walk.RGB(226, 182, 87), walk.Rectangle{
+		X: lx, Y: ly, Width: sz.Width, Height: sz.Height,
+	}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextNoPrefix)
+}
+
+func (b *board) paintTip(canvas *walk.Canvas, bounds walk.Rectangle, m boardMetrics) {
+	if b.tipItem < 0 || b.tipItem >= len(b.items) || b.tipNode < 0 {
+		return
+	}
+	item := b.items[b.tipItem]
+	if b.tipNode >= len(item.Samples) {
+		return
+	}
+	sample := item.Samples[b.tipNode]
+	date := sample.When
+	price := money.FormatKopecks(sample.Price)
+	if date == "" && price == "" {
+		return
+	}
+	pts := sparkline(m.chartRect(m.rowRect(bounds.Width, 0)).Width, m.chartH, item.Points)
+	if b.tipNode >= len(pts) {
+		return
+	}
+	y := b.tipItem*m.rowH - b.scroll
+	chart := m.chartRect(m.rowRect(bounds.Width, y))
+	nx := chart.X + pts[b.tipNode].X
+	ny := chart.Y + pts[b.tipNode].Y
+
+	dateSz := measureLine(canvas, b.metaFont, date)
+	priceSz := measureLine(canvas, b.priceFont, price)
+	if b.priceFont == nil {
+		priceSz = measureLine(canvas, b.metaFont, price)
+	}
+	lineGap := walk.IntFrom96DPI(2, m.dpi)
+	boxPad := walk.IntFrom96DPI(8, m.dpi)
+	innerW := dateSz.Width
+	if priceSz.Width > innerW {
+		innerW = priceSz.Width
+	}
+	innerH := dateSz.Height + lineGap + priceSz.Height
+	tw := innerW + boxPad*2
+	th := innerH + boxPad*2
+	tx := nx - tw/2
+	ty := ny - th - walk.IntFrom96DPI(10, m.dpi)
+	if tx < bounds.X+2 {
+		tx = bounds.X + 2
+	}
+	if tx+tw > bounds.X+bounds.Width-2 {
+		tx = bounds.X + bounds.Width - 2 - tw
+	}
+	if ty < bounds.Y+2 {
+		ty = ny + walk.IntFrom96DPI(12, m.dpi)
+	}
+	tip := walk.Rectangle{X: tx, Y: ty, Width: tw, Height: th}
+	fill := b.rowHot
+	if fill == nil {
+		fill = b.row
+	}
+	if fill != nil {
+		_ = canvas.FillRectanglePixels(fill, tip)
+	}
+	if b.goldPen != nil {
+		_ = canvas.DrawRectanglePixels(b.goldPen, tip)
+	}
+	textClr := walk.RGB(243, 234, 220)
+	gold := walk.RGB(226, 182, 87)
+	dateBox := walk.Rectangle{X: tip.X + boxPad, Y: tip.Y + boxPad, Width: innerW, Height: dateSz.Height}
+	priceBox := walk.Rectangle{X: tip.X + boxPad, Y: dateBox.Y + dateSz.Height + lineGap, Width: innerW, Height: priceSz.Height}
+	_ = canvas.DrawTextPixels(date, b.metaFont, textClr, dateBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
+	priceFont := b.priceFont
+	if priceFont == nil {
+		priceFont = b.metaFont
+	}
+	_ = canvas.DrawTextPixels(price, priceFont, gold, priceBox, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
+}
+
+func measureLine(canvas *walk.Canvas, font *walk.Font, text string) walk.Rectangle {
+	if canvas == nil || font == nil || text == "" {
+		return walk.Rectangle{}
+	}
+	sz, _, err := canvas.MeasureTextPixels(text, font, walk.Rectangle{Width: 2000, Height: 200}, walk.TextCalcRect|walk.TextSingleLine|walk.TextNoPrefix)
+	if err != nil {
+		return walk.Rectangle{Width: len([]rune(text)) * 8, Height: 16}
+	}
+	if sz.Width < 1 {
+		sz.Width = 1
+	}
+	if sz.Height < 1 {
+		sz.Height = 1
+	}
+	return sz
+}
+
+func (b *board) hit(x, y int) (item, node int) {
+	item, node = -1, -1
+	if len(b.items) == 0 {
+		return
+	}
+	m := b.metrics()
+	idx := (y + b.scroll) / m.rowH
+	if idx < 0 || idx >= len(b.items) {
+		return
+	}
+	item = idx
+	it := b.items[idx]
+	if len(it.Points) == 0 {
+		return
+	}
+	width := 0
+	if b.widget != nil {
+		width = b.widget.ClientBoundsPixels().Width
+	}
+	rowY := idx*m.rowH - b.scroll
+	chart := m.chartRect(m.rowRect(width, rowY))
+	if x < chart.X || x >= chart.X+chart.Width || y < chart.Y || y >= chart.Y+chart.Height {
+		return
+	}
+	node = hitSample(chart.Width, len(it.Points), x-chart.X)
+	return
 }
 
 func (b *board) attach(w *walk.CustomWidget) {
 	b.widget = w
+	b.hover, b.tipItem, b.tipNode = -1, -1, -1
 	w.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
 		delta := walk.MouseWheelEventDelta(button)
 		if delta == 0 {
@@ -195,13 +384,12 @@ func (b *board) attach(w *walk.CustomWidget) {
 		b.clampScroll()
 		w.Invalidate()
 	})
-	w.MouseMove().Attach(func(_, y int, _ walk.MouseButton) {
-		idx := (y + b.scroll) / b.rowH()
-		if idx < 0 || idx >= len(b.items) {
-			idx = -1
-		}
-		if idx != b.hover {
+	w.MouseMove().Attach(func(x, y int, _ walk.MouseButton) {
+		idx, node := b.hit(x, y)
+		if idx != b.hover || node != b.tipNode || idx != b.tipItem {
 			b.hover = idx
+			b.tipItem = idx
+			b.tipNode = node
 			w.Invalidate()
 		}
 	})

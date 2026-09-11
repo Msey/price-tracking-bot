@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +45,8 @@ type Tracker struct {
 	kick     chan struct{}
 	pending  atomic.Bool
 	busy     atomic.Bool
+	statusMu sync.Mutex
+	status   string
 }
 
 func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
@@ -77,12 +81,36 @@ func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg
 // RequestCheck сбрасывает ожидание автоцикла и ставит полную проверку всех товаров.
 func (t *Tracker) RequestCheck() {
 	t.pending.Store(true)
+	t.setStatus("Запущена проверка всех цен. Таймер автоцикла сброшен.")
 	select {
 	case t.kick <- struct{}{}:
 		t.log.Info("запрошена принудительная проверка")
 	default:
 		t.log.Info("принудительная проверка уже стоит в очереди")
 	}
+}
+
+// StatusText — что сейчас делает трекер, для строки статуса в окне.
+func (t *Tracker) StatusText() string {
+	t.statusMu.Lock()
+	defer t.statusMu.Unlock()
+	return t.status
+}
+
+func (t *Tracker) setStatus(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	t.statusMu.Lock()
+	t.status = msg
+	t.statusMu.Unlock()
+}
+
+// SetUserHint пишет в статус то, что должен увидеть человек — например капчу.
+func (t *Tracker) SetUserHint(msg string) {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	t.setStatus("%s", msg)
 }
 
 // Busy — идёт проверка или она уже запрошена и вот-вот начнётся.
@@ -109,9 +137,13 @@ func (t *Tracker) Run(ctx context.Context) {
 		t.pending.Store(false)
 		if force {
 			t.log.Info("принудительная проверка всех товаров")
+			t.setStatus("Принудительная проверка всех товаров")
 			t.cycleAll(ctx)
+			t.finishStatus(true)
 		} else {
+			t.setStatus("Автоматическая проверка цен")
 			t.cycle(ctx)
+			t.finishStatus(false)
 		}
 		t.busy.Store(false)
 		if !t.wait(ctx, t.cfg.Interval) {
@@ -180,6 +212,7 @@ func (t *Tracker) cycleSite(ctx context.Context, site string) {
 	}); ok {
 		if until, reason, on := paused.Paused(); on {
 			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
+			t.setStatus("Пропуск %s: предохранитель до %s", site, until.Local().Format("15:04"))
 			return
 		}
 	}
@@ -193,6 +226,7 @@ func (t *Tracker) cycleSite(ctx context.Context, site string) {
 }
 
 func (t *Tracker) cycleAll(ctx context.Context) {
+	t.lastHit = time.Time{}
 	for _, site := range t.siteNames() {
 		if ctx.Err() != nil {
 			return
@@ -211,6 +245,7 @@ func (t *Tracker) cycleSiteAll(ctx context.Context, site string) {
 	}); ok {
 		if until, reason, on := paused.Paused(); on {
 			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
+			t.setStatus("Пропуск %s: предохранитель до %s", site, until.Local().Format("15:04"))
 			return
 		}
 	}
@@ -226,6 +261,7 @@ func (t *Tracker) cycleSiteAll(ctx context.Context, site string) {
 func (t *Tracker) fetchList(ctx context.Context, site string, due []storage.Product) {
 	if len(due) == 0 {
 		t.log.Info("нечего проверять", "site", site)
+		t.setStatus("Нечего проверять на %s", site)
 		return
 	}
 
@@ -236,13 +272,18 @@ func (t *Tracker) fetchList(ctx context.Context, site string, due []storage.Prod
 		}
 		if i > 0 || !t.lastHit.IsZero() {
 			wait := t.cfg.FetchGap - time.Since(t.lastHit)
-			if wait > 0 && !sleepCtx(ctx, wait) {
-				return
+			if wait > 0 {
+				t.setStatus("Пауза %s до следующего товара · дальше %s", wait.Round(time.Second), p.Title())
+				if !sleepCtx(ctx, wait) {
+					return
+				}
 			}
 		}
 		t.lastHit = time.Now()
+		t.setStatus("Проверяю %s · %d/%d · %s", site, i+1, len(due), p.Title())
 		if err := t.checkOne(ctx, p); err != nil {
 			t.log.Warn("проверка не удалась", "site", site, "product", p.ID, "url", p.URL, "error", err)
+			t.setStatus("Ошибка %s · %s", site, clipStatus(err.Error(), 180))
 			kind := "fetch"
 			if errors.Is(err, fetch.ErrChallenge) {
 				kind = "challenge"
@@ -361,6 +402,26 @@ func abs64(n int64) int64 {
 		return -n
 	}
 	return n
+}
+
+func (t *Tracker) finishStatus(force bool) {
+	cur := t.StatusText()
+	if strings.HasPrefix(cur, "Ошибка") {
+		return
+	}
+	if force {
+		t.setStatus("Проверка завершена. Следующий автоцикл через %s.", t.cfg.Interval)
+		return
+	}
+	t.setStatus("Автопроверка завершена. Следующая через %s.", t.cfg.Interval)
+}
+
+func clipStatus(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len([]rune(s)) <= n {
+		return s
+	}
+	return string([]rune(s)[:n-1]) + "…"
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

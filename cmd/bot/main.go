@@ -4,9 +4,11 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -22,12 +24,25 @@ import (
 
 func main() {
 	runtime.LockOSThread()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, closeLog := newLogger()
+	if closeLog != nil {
+		defer closeLog()
+	}
 
 	if err := run(log); err != nil {
 		log.Error("бот остановлен с ошибкой", "error", err)
 		os.Exit(1)
 	}
+}
+
+func newLogger() (*slog.Logger, func()) {
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	_ = os.MkdirAll("data", 0o755)
+	f, err := os.OpenFile(filepath.Join("data", "bot.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil
+	}
+	return slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, f), opts)), func() { _ = f.Close() }
 }
 
 func run(log *slog.Logger) error {
@@ -88,6 +103,7 @@ func run(log *slog.Logger) error {
 		PerCycle:     cfg.FetchPerCycle,
 		StartupDelay: cfg.StartupDelay,
 	}, log)
+	browser.SetOnChallenge(tr.SetUserHint)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -117,6 +133,7 @@ func run(log *slog.Logger) error {
 			BotUsername: bot.Username(),
 			CheckNow:    tr.RequestCheck,
 			CheckBusy:   tr.Busy,
+			CheckStatus: tr.StatusText,
 		})
 		stop()
 		log.Info("бот остановлен")

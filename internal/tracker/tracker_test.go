@@ -139,3 +139,39 @@ func TestCycleAllChecksFreshProducts(t *testing.T) {
 		t.Fatalf("полная проверка должна сходить за свежим товаром, вызовов %d", dns.calls)
 	}
 }
+
+func TestCycleAllDoesNotWaitInitialGap(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	if _, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	tr := New(store, map[string]Fetcher{"dns": dns}, &fakeNotify{}, Config{
+		Interval:     20 * time.Minute,
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+	tr.lastHit = time.Now()
+
+	done := make(chan struct{})
+	go func() {
+		tr.cycleAll(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatal("полная проверка ждала паузу перед первым товаром")
+	}
+	if dns.calls != 1 {
+		t.Fatalf("вызовов %d", dns.calls)
+	}
+}

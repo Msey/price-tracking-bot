@@ -104,7 +104,7 @@ func (m *Market) Fetch(_ context.Context, p storage.Product) (Snapshot, error) {
 }
 
 func (m *Market) maybeTrip(err error) {
-	if err == nil {
+	if err == nil || isChromeStartError(err) {
 		return
 	}
 	if errors.Is(err, ErrChallenge) || isBanError(err) {

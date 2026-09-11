@@ -18,4 +18,6 @@ type Options struct {
 	CheckNow func()
 	// CheckBusy сообщает, что проверка уже идёт или только что запрошена.
 	CheckBusy func() bool
+	// CheckStatus — текст текущего шага проверки для строки статуса.
+	CheckStatus func() string
 }
