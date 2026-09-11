@@ -17,9 +17,18 @@ func TestShoppingChromeArgsHaveNoDebugger(t *testing.T) {
 		if strings.HasPrefix(a, "--load-extension=") && strings.Contains(a, "chrome-ext") {
 			found = true
 		}
+		if strings.Contains(a, "ozon.ru") || strings.Contains(a, "dns-shop") || strings.Contains(a, "market.yandex") {
+			t.Fatalf("URL магазина в argv откроет лишнюю вкладку: %s", a)
+		}
+		if a == "--disable-popup-blocking" {
+			t.Fatal("магазины не должны открывать вкладки через popup")
+		}
 	}
 	if !found {
 		t.Fatalf("ожидался --load-extension: %v", args)
+	}
+	if args[len(args)-1] != "about:blank" {
+		t.Fatalf("старт должен быть about:blank, получено %v", args)
 	}
 	foundExcept := false
 	for _, a := range args {

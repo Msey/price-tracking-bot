@@ -180,9 +180,10 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 
 		nodeR := walk.IntFrom96DPI(3, dpi)
 		hotR := walk.IntFrom96DPI(5, dpi)
-		// Подписи идут слева направо, и следующая пропускается, если легла бы
-		// на предыдущую: при девяноста замерах на строку все ценники слиплись
-		// бы в кашу. Узел под курсором подписывается всегда.
+		// Подпись — только на смене цены. Одинаковые узлы подряд без
+		// ценника: иначе плато из десятков замеров забивает график одним
+		// и тем же числом. Близкие разные цены по-прежнему не наезжают
+		// друг на друга.
 		labelEdge := chart.X
 		for j, p := range wpts {
 			r := nodeR
@@ -195,12 +196,12 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 					X: p.X - r, Y: p.Y - r, Width: r*2 + 1, Height: r*2 + 1,
 				})
 			}
-			if j >= len(item.Samples) {
+			if j >= len(item.Samples) || !firstPriceLabel(item.Points, j) {
 				continue
 			}
 			price := money.FormatKopecks(item.Samples[j].Price)
 			box, ok := b.nodePriceBox(canvas, chart, p, price, r, m)
-			if !ok || (box.X < labelEdge && !hot) {
+			if !ok || box.X < labelEdge {
 				continue
 			}
 			_ = canvas.DrawTextPixels(price, b.metaFont, gold, box,

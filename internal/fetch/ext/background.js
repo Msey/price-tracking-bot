@@ -11,23 +11,15 @@ function sleep(ms) {
   });
 }
 
-async function openJob(url) {
-  var tabs = await chrome.tabs.query({ currentWindow: true, active: true });
-  if (tabs && tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { url: url });
-    return;
-  }
-  tabs = await chrome.tabs.query({});
-  if (tabs && tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { url: url });
-    return;
-  }
-  await chrome.tabs.create({ url: url });
+function tabURL(t) {
+  return (t && (t.pendingUrl || t.url)) || '';
 }
 
 function isShopURL(u) {
   u = (u || '').toLowerCase();
-  return u.indexOf('dns-shop') !== -1 || u.indexOf('ozon.ru') !== -1 || u.indexOf('market.yandex') !== -1;
+  return u.indexOf('dns-shop') !== -1
+    || u.indexOf('ozon.ru') !== -1
+    || u.indexOf('market.yandex') !== -1;
 }
 
 function isEmptyTab(u) {
@@ -35,26 +27,67 @@ function isEmptyTab(u) {
   return !u || u === 'about:blank' || u.indexOf('chrome://newtab') === 0 || u.indexOf('chrome://new-tab-page') === 0;
 }
 
-async function closeShopWindows() {
-  var wins = await chrome.windows.getAll({ populate: true });
-  for (var i = 0; i < wins.length; i++) {
-    var tabs = wins[i].tabs || [];
-    var shop = false;
-    var onlyEmpty = true;
-    for (var j = 0; j < tabs.length; j++) {
-      var u = tabs[j].url || '';
-      if (isShopURL(u)) {
-        shop = true;
-      }
-      if (!isEmptyTab(u) && !isShopURL(u) && u.indexOf('chrome://extensions') === -1) {
-        onlyEmpty = false;
-      }
+function pickTab(tabs) {
+  var shop = null;
+  var empty = null;
+  var active = null;
+  for (var i = 0; i < tabs.length; i++) {
+    var u = tabURL(tabs[i]);
+    if (!shop && isShopURL(u)) {
+      shop = tabs[i];
     }
-    if (shop || onlyEmpty) {
-      try {
-        await chrome.windows.remove(wins[i].id);
-      } catch (e) {}
+    if (!empty && isEmptyTab(u)) {
+      empty = tabs[i];
     }
+    if (!active && tabs[i].active) {
+      active = tabs[i];
+    }
+  }
+  return shop || empty || active || tabs[0] || null;
+}
+
+async function closeTabsExcept(keepId) {
+  var tabs = await chrome.tabs.query({});
+  var ids = [];
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].id && tabs[i].id !== keepId) {
+      ids.push(tabs[i].id);
+    }
+  }
+  if (ids.length) {
+    try {
+      await chrome.tabs.remove(ids);
+    } catch (e) {}
+  }
+}
+
+async function openJob(url) {
+  var tabs = await chrome.tabs.query({});
+  var keep = pickTab(tabs);
+  if (keep) {
+    try {
+      await chrome.tabs.update(keep.id, { url: url, active: true });
+    } catch (e) {
+      keep = await chrome.tabs.create({ url: url });
+    }
+    await closeTabsExcept(keep.id);
+    return;
+  }
+  await chrome.tabs.create({ url: url });
+}
+
+async function closeShopTabs() {
+  var tabs = await chrome.tabs.query({});
+  var ids = [];
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].id) {
+      ids.push(tabs[i].id);
+    }
+  }
+  if (ids.length) {
+    try {
+      await chrome.tabs.remove(ids);
+    } catch (e) {}
   }
 }
 
@@ -95,7 +128,7 @@ async function loop() {
         continue;
       }
       if (job.action === 'close') {
-        await closeShopWindows();
+        await closeShopTabs();
         continue;
       }
       if (!job.url) {

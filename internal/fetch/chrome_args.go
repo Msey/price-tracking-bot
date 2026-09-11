@@ -10,16 +10,13 @@ import (
 // Здесь не должно быть remote-debugging-pipe/port: Ozon и DNS считают
 // такой процесс ботом (заглушка «нет соединения», QRATOR 403).
 func shoppingChromeArgs(profile, extDir, extID, startURL string) []string {
-	if startURL == "" {
-		startURL = "about:blank"
-	}
+	_ = startURL
 	args := []string{
 		"--user-data-dir=" + profile,
 		"--enable-unsafe-extension-debugging",
 		"--disable-features=DisableLoadExtensionCommandLineSwitch",
 		"--no-first-run",
 		"--no-default-browser-check",
-		"--disable-popup-blocking",
 		"--hide-crash-restore-bubble",
 	}
 	if extDir != "" {
@@ -28,7 +25,9 @@ func shoppingChromeArgs(profile, extDir, extID, startURL string) []string {
 	if extID != "" {
 		args = append(args, "--disable-extensions-except="+extID)
 	}
-	return append(args, startURL)
+	// Карточку открывает расширение. URL в argv, если Chrome этого
+	// профиля уже жив, добавляет ещё одну вкладку — так они и копились.
+	return append(args, "about:blank")
 }
 
 func installChromeArgs(profile string) []string {

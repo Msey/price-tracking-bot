@@ -72,3 +72,15 @@ func hitSample(width, n, x int) int {
 	}
 	return i
 }
+
+// firstPriceLabel — писать цену только на первом узле группы с одной
+// ценой. Пока цена не сменилась, остальные точки остаются без подписи.
+func firstPriceLabel(prices []int64, i int) bool {
+	if i < 0 || i >= len(prices) {
+		return false
+	}
+	if i == 0 {
+		return true
+	}
+	return prices[i] != prices[i-1]
+}

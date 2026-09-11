@@ -94,3 +94,19 @@ func TestNodeSlots(t *testing.T) {
 		t.Fatalf("попадание: %d %d %d", hitSample(90, 3, 0), hitSample(90, 3, 30), hitSample(90, 3, 89))
 	}
 }
+
+func TestFirstPriceLabel(t *testing.T) {
+	prices := []int64{100, 100, 100, 90, 90, 120}
+	want := []bool{true, false, false, true, false, true}
+	for i, w := range want {
+		if got := firstPriceLabel(prices, i); got != w {
+			t.Errorf("i=%d: %v, нужно %v", i, got, w)
+		}
+	}
+	if firstPriceLabel(nil, 0) || firstPriceLabel(prices, -1) || firstPriceLabel(prices, 99) {
+		t.Fatal("за пределами среза не должно быть подписи")
+	}
+	if !firstPriceLabel([]int64{7}, 0) {
+		t.Fatal("единственный узел подписывается")
+	}
+}

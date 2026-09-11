@@ -167,17 +167,19 @@ func (b *Browser) requestClose() {
 	b.closeReq.Store(true)
 	b.poke()
 	b.log.Info("закрываю вкладку магазина")
-	deadline := time.Now().Add(1500 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if !b.chromeAlive() {
-			return
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if b.human.Load() {
 		return
 	}
-	b.log.Info("окно Chrome ещё на месте, закрываю процесс")
+	// chromeAlive смотрит на процесс, который мы сами запустили. У Chrome
+	// он часто сразу выходит, а окно живёт в другом процессе профиля —
+	// тогда без kill вкладки копятся в уже открытом окне.
 	b.stopChromeLocked()
 }
 
@@ -622,6 +624,10 @@ func markChromeExitedCleanly(dir string) {
 		`"exited_cleanly": false`, `"exited_cleanly": true`,
 		`"exit_type":"Crashed"`, `"exit_type":"Normal"`,
 		`"exit_type": "Crashed"`, `"exit_type": "Normal"`,
+		`"restore_on_startup":1`, `"restore_on_startup":5`,
+		`"restore_on_startup": 1`, `"restore_on_startup": 5`,
+		`"restore_on_startup":4`, `"restore_on_startup":5`,
+		`"restore_on_startup": 4`, `"restore_on_startup": 5`,
 	)
 	for _, rel := range []string{"Local State", filepath.Join("Default", "Preferences")} {
 		p := filepath.Join(dir, rel)
@@ -630,10 +636,34 @@ func markChromeExitedCleanly(dir string) {
 			continue
 		}
 		n := repl.Replace(string(b))
+		n = ensureRestoreNewTab(n)
 		if n != string(b) {
 			_ = os.WriteFile(p, []byte(n), 0o644)
 		}
 	}
+}
+
+// ensureRestoreNewTab — иначе «продолжить с того места» поднимает все
+// старые вкладки магазинов при каждом запуске Chrome.
+func ensureRestoreNewTab(raw string) string {
+	if strings.Contains(raw, `"restore_on_startup"`) {
+		return raw
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return raw
+	}
+	sess, _ := m["session"].(map[string]any)
+	if sess == nil {
+		sess = map[string]any{}
+		m["session"] = sess
+	}
+	sess["restore_on_startup"] = 5
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 func chromeStartError(profile string, err error) error {

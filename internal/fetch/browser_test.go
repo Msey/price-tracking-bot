@@ -64,6 +64,36 @@ func TestMarkChromeExitedCleanly(t *testing.T) {
 	}
 }
 
+func TestMarkChromeExitedCleanlyDisablesSessionRestore(t *testing.T) {
+	dir := t.TempDir()
+	pref := filepath.Join(dir, "Default")
+	if err := os.MkdirAll(pref, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"session":{"restore_on_startup":1},"profile":{"exited_cleanly":true}}`)
+	if err := os.WriteFile(filepath.Join(pref, "Preferences"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markChromeExitedCleanly(dir)
+	got, err := os.ReadFile(filepath.Join(pref, "Preferences"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `"restore_on_startup":1`) {
+		t.Fatalf("сессия всё ещё восстанавливается: %s", got)
+	}
+	if !strings.Contains(string(got), `"restore_on_startup":5`) {
+		t.Fatalf("нужен restore_on_startup=5: %s", got)
+	}
+}
+
+func TestEnsureRestoreNewTabInsertsKey(t *testing.T) {
+	got := ensureRestoreNewTab(`{"profile":{"name":"bot"}}`)
+	if !strings.Contains(got, `"restore_on_startup":5`) && !strings.Contains(got, `"restore_on_startup": 5`) {
+		t.Fatalf("не вставили restore_on_startup: %s", got)
+	}
+}
+
 func TestSameShopURL(t *testing.T) {
 	ozon := "https://www.ozon.ru/product/germetik-2422341064"
 	if !sameShopURL(ozon, "https://www.ozon.ru/product/germetik-2422341064/?_bctx=1") {
