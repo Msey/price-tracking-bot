@@ -83,7 +83,7 @@ type app struct {
 	mw            *walk.MainWindow
 	board         *board
 	status        *walk.Label
-	ni            *walk.NotifyIcon
+	ni            *trayIcon
 	items         []Item
 	allowQuit     bool
 	loaded        bool
@@ -92,7 +92,7 @@ type app struct {
 	checkStatus   func() string
 	checkBtn      *walk.PushButton
 	logBtn        *walk.PushButton
-	logAct        *walk.Action
+	logCmd        uint16
 	logEnabled    func() bool
 	setLogEnabled func(bool)
 	captchaTold   bool
@@ -110,6 +110,7 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Log == nil {
 		opt.Log = slog.Default()
 	}
+	setAppUserModelID()
 	if err := enableCommonControlsV6(); err != nil {
 		opt.Log.Warn("не удалось включить Common Controls 6", "error", err)
 	}
@@ -291,59 +292,46 @@ func Run(ctx context.Context, opt Options) error {
 		}
 	})
 
-	ni, err := walk.NewNotifyIcon(a.mw)
+	ni, err := newTrayIcon(a.mw.Handle(), windowTrayIcon(a.mw.Handle()), a.showWindow)
 	if err != nil {
 		return err
 	}
 	// Иначе сбой при сборке меню оставил бы иконку висеть в трее.
 	// Dispose идемпотентен, поэтому явный вызов в quit остаётся рабочим.
-	keep(disposeFunc(func() { _ = ni.Dispose() }))
+	keep(disposeFunc(func() { ni.Dispose() }))
 	a.ni = ni
-	if !hookTrayMenu(a.mw.Handle()) {
-		opt.Log.Warn("меню трея может открываться дважды: не удалось подменить оконную процедуру")
-	}
-	_ = ni.SetIcon(icon)
-	_ = ni.SetToolTip("Трекинг цен")
-	_ = ni.SetVisible(true)
-	ni.MouseUp().Attach(func(_, _ int, btn walk.MouseButton) {
-		if btn == walk.LeftButton {
-			a.showWindow()
-		}
-	})
-	if err := addTrayAction(ni, "Открыть окно", a.showWindow); err != nil {
+	_ = ni.setToolTip("Трекинг цен")
+	_ = ni.setVisible(true)
+	if _, err := ni.addAction("Открыть окно", a.showWindow); err != nil {
 		return err
 	}
 	if link := telegramBotURL(opt.BotUsername); link != "" {
-		if err := addTrayAction(ni, "Открыть в Telegram", func() { openURL(link) }); err != nil {
+		if _, err := ni.addAction("Открыть в Telegram", func() { openURL(link) }); err != nil {
 			return err
 		}
 	}
 	if a.checkNow != nil {
-		if err := addTrayAction(ni, "Проверить цены", a.requestCheck); err != nil {
+		if _, err := ni.addAction("Проверить цены", a.requestCheck); err != nil {
 			return err
 		}
 	}
-	if err := addTrayAction(ni, "Обновить список", a.refreshClicked); err != nil {
+	if _, err := ni.addAction("Обновить список", a.refreshClicked); err != nil {
 		return err
 	}
-	if err := addTrayAction(ni, "Папка с данными", a.openDataFolder); err != nil {
+	if _, err := ni.addAction("Папка с данными", a.openDataFolder); err != nil {
 		return err
 	}
 	if a.setLogEnabled != nil {
-		logAct := walk.NewAction()
-		if err := logAct.SetText("Логи: выкл"); err != nil {
+		id, err := ni.addAction("Логи: выкл", a.toggleDiagLog)
+		if err != nil {
 			return err
 		}
-		logAct.Triggered().Attach(a.toggleDiagLog)
-		if err := ni.ContextMenu().Actions().Add(logAct); err != nil {
-			return err
-		}
-		a.logAct = logAct
+		a.logCmd = id
 	}
-	if err := ni.ContextMenu().Actions().Add(walk.NewSeparatorAction()); err != nil {
+	if err := ni.addSeparator(); err != nil {
 		return err
 	}
-	if err := addTrayAction(ni, "Выход", a.quit); err != nil {
+	if _, err := ni.addAction("Выход", a.quit); err != nil {
 		return err
 	}
 
@@ -357,7 +345,7 @@ func Run(ctx context.Context, opt Options) error {
 	a.log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
 	if opt.StartHidden {
 		a.hideToTray()
-		_ = ni.ShowInfo("Трекинг цен", "Бот в трее. Щелчок по иконке открывает окно.")
+		_ = ni.showInfo("Трекинг цен", "Бот в трее. Щелчок по иконке открывает окно.")
 	} else {
 		a.mw.Show()
 	}
@@ -370,15 +358,6 @@ func Run(ctx context.Context, opt Options) error {
 type disposeFunc func()
 
 func (f disposeFunc) Dispose() { f() }
-
-func addTrayAction(ni *walk.NotifyIcon, title string, fn func()) error {
-	act := walk.NewAction()
-	if err := act.SetText(title); err != nil {
-		return err
-	}
-	act.Triggered().Attach(fn)
-	return ni.ContextMenu().Actions().Add(act)
-}
 
 func (a *app) requestCheck() {
 	a.log.Info("нажата проверка цен")
@@ -426,8 +405,8 @@ func (a *app) syncDiagLogUI() {
 	if a.logBtn != nil {
 		_ = a.logBtn.SetText(text)
 	}
-	if a.logAct != nil {
-		_ = a.logAct.SetText(text)
+	if a.ni != nil && a.logCmd != 0 {
+		a.ni.setItemText(a.logCmd, text)
 	}
 }
 
@@ -496,7 +475,7 @@ func (a *app) noteCaptcha(msg string) {
 		return
 	}
 	a.captchaTold = true
-	_ = a.ni.ShowInfo("Нужна капча", "Откройте окно Chrome и пройдите проверку. Бот подождёт несколько минут.")
+	_ = a.ni.showInfo("Нужна капча", "Откройте окно Chrome и пройдите проверку. Бот подождёт несколько минут.")
 }
 
 func (a *app) updateCheckUI() {
@@ -536,7 +515,7 @@ func (a *app) quit() {
 	a.allowQuit = true
 	a.closed.Store(true)
 	if a.ni != nil {
-		_ = a.ni.Dispose()
+		a.ni.Dispose()
 	}
 	walk.App().Exit(0)
 }
@@ -560,20 +539,26 @@ func (a *app) watchShowRequests() {
 }
 
 func (a *app) poll(ctx context.Context) {
-	timer := time.NewTimer(4 * time.Second)
-	defer timer.Stop()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	var lastRefresh time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
-			a.onUI(a.updateCheckUI)
-			a.refresh(true)
-			d := 10 * time.Second
+		case <-tick.C:
+			a.onUI(func() {
+				a.updateCheckUI()
+				a.updateStatus()
+			})
+			every := 10 * time.Second
 			if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
-				d = 4 * time.Second
+				every = 4 * time.Second
 			}
-			timer.Reset(d)
+			if lastRefresh.IsZero() || time.Since(lastRefresh) >= every {
+				lastRefresh = time.Now()
+				a.refresh(true)
+			}
 		}
 	}
 }
@@ -614,24 +599,45 @@ func (a *app) apply(items []Item, err error, notify bool) {
 		a.board.setItems(items)
 	}
 	a.loaded = true
-	if a.status != nil {
-		n := len(items)
-		if msg := a.checkMessage(); msg != "" {
-			_ = a.status.SetText(msg)
-			a.noteCaptcha(msg)
-		} else if a.checkRunning() {
-			_ = a.status.SetText("Идёт проверка цен · " +
-				fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
-				" · автоцикл начнётся заново после неё")
-		} else {
-			_ = a.status.SetText("Работает в фоне · " +
-				fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
-				" в списке · закрытие окна прячет в трей")
+	a.updateStatus()
+	if a.ni != nil {
+		_ = a.ni.setToolTip(a.tooltipText())
+	}
+}
+
+func (a *app) updateStatus() {
+	if a.status == nil {
+		return
+	}
+	if msg := a.checkMessage(); msg != "" {
+		_ = a.status.SetText(msg)
+		a.noteCaptcha(msg)
+		if a.ni != nil {
+			_ = a.ni.setToolTip(a.tooltipText())
 		}
+		return
+	}
+	n := len(a.items)
+	if a.checkRunning() {
+		_ = a.status.SetText("Идёт проверка цен · " +
+			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
+			" · автоцикл начнётся заново после неё")
+	} else {
+		_ = a.status.SetText("Работает в фоне · " +
+			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
+			" в списке · закрытие окна прячет в трей")
 	}
 	if a.ni != nil {
-		_ = a.ni.SetToolTip("Трекинг цен · " + view.RuPlural(len(items), "товар", "товара", "товаров"))
+		_ = a.ni.setToolTip(a.tooltipText())
 	}
+}
+
+func (a *app) tooltipText() string {
+	n := view.RuPlural(len(a.items), "товар", "товара", "товаров")
+	if msg := a.checkMessage(); msg != "" {
+		return "Трекинг цен · " + clip(msg, 80)
+	}
+	return "Трекинг цен · " + n
 }
 
 // maxBalloons — сколько всплывающих подсказок показать за один заход.
@@ -643,11 +649,11 @@ func (a *app) announce(title string, lines []string, limit int) {
 	for i, line := range lines {
 		if i == maxBalloons {
 			rest := len(lines) - maxBalloons
-			_ = a.ni.ShowInfo(title, fmt.Sprintf("и ещё %d %s", rest,
+			_ = a.ni.showInfo(title, fmt.Sprintf("и ещё %d %s", rest,
 				view.RuPlural(rest, "изменение", "изменения", "изменений")))
 			return
 		}
-		_ = a.ni.ShowInfo(title, clip(line, limit))
+		_ = a.ni.showInfo(title, clip(line, limit))
 	}
 }
 

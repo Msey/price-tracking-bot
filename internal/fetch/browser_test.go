@@ -1,10 +1,14 @@
 package fetch
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewBrowserUsesAbsoluteProfile(t *testing.T) {
@@ -136,4 +140,66 @@ func TestStampManifestBumpsVersion(t *testing.T) {
 	if !strings.Contains(string(got), `"http://127.0.0.1:*/*"`) {
 		t.Fatal("потеряли host_permissions")
 	}
+}
+
+func TestWaitJobSendsCloseWhenIdle(t *testing.T) {
+	b := newTestBrowser(t)
+	b.closeReq.Store(true)
+	got := waitJobJSON(t, b, 2*time.Second)
+	if got["action"] != "close" {
+		t.Fatalf("ожидался action=close, получено %v", got)
+	}
+}
+
+func TestWaitJobPrefersNewURLOverClose(t *testing.T) {
+	b := newTestBrowser(t)
+	b.closeReq.Store(true)
+	b.job.Store(&extJob{
+		url:  "https://www.ozon.ru/product/1",
+		site: "ozon",
+		bits: make(chan pageBits, 1),
+	})
+	got := waitJobJSON(t, b, 2*time.Second)
+	if got["action"] == "close" {
+		t.Fatal("новая карточка важнее закрытия")
+	}
+	if got["url"] != "https://www.ozon.ru/product/1" {
+		t.Fatalf("url %v", got)
+	}
+}
+
+func newTestBrowser(t *testing.T) *Browser {
+	t.Helper()
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
+	b.token = "tokentokentoken1"
+	if err := b.ensureServerLocked(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(b.Close)
+	return b
+}
+
+func waitJobJSON(t *testing.T, b *Browser, timeout time.Duration) map[string]string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+b.addr+"/ext/wait-job", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+b.token)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got
 }

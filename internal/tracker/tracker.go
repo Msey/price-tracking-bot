@@ -48,6 +48,8 @@ type Tracker struct {
 	busy     atomic.Bool
 	statusMu sync.Mutex
 	status   string
+	until    time.Time
+	waitKind string
 	done     chan struct{}
 }
 
@@ -106,10 +108,43 @@ func (t *Tracker) RequestCheck() {
 }
 
 // StatusText — что сейчас делает трекер, для строки статуса в окне.
+// Пока ждём следующую проверку, сюда попадает живой отсчёт.
 func (t *Tracker) StatusText() string {
 	t.statusMu.Lock()
 	defer t.statusMu.Unlock()
+	if !t.until.IsZero() {
+		left := time.Until(t.until)
+		cd := formatCountdown(left)
+		if strings.HasPrefix(t.status, "Ошибка") {
+			return t.status + " · следующая проверка через " + cd
+		}
+		switch t.waitKind {
+		case "startup":
+			return "Первая проверка через " + cd
+		case "gap":
+			if t.status != "" {
+				return "Пауза " + cd + " до следующего товара · " + t.status
+			}
+			return "Пауза " + cd + " до следующего товара"
+		default:
+			return "Следующая проверка через " + cd
+		}
+	}
 	return t.status
+}
+
+func (t *Tracker) setUntil(at time.Time, kind string) {
+	t.statusMu.Lock()
+	t.until = at
+	t.waitKind = kind
+	t.statusMu.Unlock()
+}
+
+func (t *Tracker) clearUntil() {
+	t.statusMu.Lock()
+	t.until = time.Time{}
+	t.waitKind = ""
+	t.statusMu.Unlock()
 }
 
 func (t *Tracker) setStatus(format string, args ...any) {
@@ -145,7 +180,7 @@ func (t *Tracker) Run(ctx context.Context) {
 		"startup_delay", t.cfg.StartupDelay,
 		"sites", t.siteNames())
 
-	if !t.wait(ctx, t.cfg.StartupDelay) {
+	if !t.wait(ctx, t.cfg.StartupDelay, "startup") {
 		return
 	}
 	for ctx.Err() == nil {
@@ -166,7 +201,7 @@ func (t *Tracker) Run(ctx context.Context) {
 			t.finishStatus(false)
 		}
 		t.busy.Store(false)
-		if !t.wait(ctx, t.cfg.Interval) {
+		if !t.wait(ctx, t.cfg.Interval, "cycle") {
 			return
 		}
 	}
@@ -187,11 +222,13 @@ func (t *Tracker) consumeKick() bool {
 	}
 }
 
-func (t *Tracker) wait(ctx context.Context, d time.Duration) bool {
+func (t *Tracker) wait(ctx context.Context, d time.Duration, kind string) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	t.log.Debug("пауза трекера", "duration", d)
+	t.log.Debug("пауза трекера", "duration", d, "kind", kind)
+	t.setUntil(time.Now().Add(d), kind)
+	defer t.clearUntil()
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -278,8 +315,11 @@ func (t *Tracker) fetchList(ctx context.Context, site string, skipGap bool, due 
 		if !skipGap && (i > 0 || !t.lastHit.IsZero()) {
 			wait := t.cfg.FetchGap - time.Since(t.lastHit)
 			if wait > 0 {
-				t.setStatus("Пауза %s до следующего товара · дальше %s", wait.Round(time.Second), p.Title())
-				if !sleepCtx(ctx, wait) {
+				t.setStatus("%s", p.Title())
+				t.setUntil(time.Now().Add(wait), "gap")
+				ok := sleepCtx(ctx, wait)
+				t.clearUntil()
+				if !ok {
 					return
 				}
 			}
@@ -419,10 +459,28 @@ func (t *Tracker) finishStatus(force bool) {
 		return
 	}
 	if force {
-		t.setStatus("Проверка завершена. Следующий автоцикл через %s.", t.cfg.Interval)
+		t.setStatus("Проверка завершена")
 		return
 	}
-	t.setStatus("Автопроверка завершена. Следующая через %s.", t.cfg.Interval)
+	t.setStatus("Автопроверка завершена")
+}
+
+func formatCountdown(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int(d.Round(time.Second).Seconds())
+	h := s / 3600
+	m := (s % 3600) / 60
+	sec := s % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%d ч %d мин %d с", h, m, sec)
+	case m > 0:
+		return fmt.Sprintf("%d мин %d с", m, sec)
+	default:
+		return fmt.Sprintf("%d с", sec)
+	}
 }
 
 func clipStatus(s string, n int) string {

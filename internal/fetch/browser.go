@@ -43,6 +43,8 @@ type Browser struct {
 	kick        chan struct{}
 	extSeen     chan struct{}
 	chromeDead  atomic.Bool
+	closeReq    atomic.Bool
+	human       atomic.Bool
 	extID       string
 	onChallenge func(string)
 }
@@ -143,13 +145,40 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	}
 	b.job.Store(j)
 	defer b.job.CompareAndSwap(j, nil)
+	b.human.Store(false)
 	b.log.Info("задача расширению", "site", p.Site, "url", p.URL, "timeout", timeout)
 
 	if err := b.ensureLocked(p.URL); err != nil {
 		return Snapshot{}, err
 	}
 
-	return waitForBits(ctx, timeout, j.bits, parse, b.noteChallenge)
+	snap, err := waitForBits(ctx, timeout, j.bits, parse, func(bits pageBits) {
+		b.human.Store(true)
+		b.noteChallenge(bits)
+	})
+	b.job.CompareAndSwap(j, nil)
+	if err == nil || !b.human.Load() {
+		b.requestClose()
+	}
+	return snap, err
+}
+
+func (b *Browser) requestClose() {
+	b.closeReq.Store(true)
+	b.poke()
+	b.log.Info("закрываю вкладку магазина")
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !b.chromeAlive() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if b.human.Load() {
+		return
+	}
+	b.log.Info("окно Chrome ещё на месте, закрываю процесс")
+	b.stopChromeLocked()
 }
 
 func (b *Browser) poke() {
@@ -393,6 +422,12 @@ func (b *Browser) handleWaitJob(w http.ResponseWriter, r *http.Request) {
 				"city": j.city,
 			})
 			b.log.Info("расширение взяло задачу", "site", j.site, "url", j.url)
+			return
+		}
+		if b.job.Load() == nil && b.closeReq.CompareAndSwap(true, false) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"action": "close"})
+			b.log.Info("расширение закрывает вкладку")
 			return
 		}
 		select {

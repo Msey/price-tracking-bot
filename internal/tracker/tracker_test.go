@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,7 +94,7 @@ func TestWaitInterruptedByRequestCheck(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		tr.RequestCheck()
 	}()
-	if !tr.wait(ctx, 2*time.Second) {
+	if !tr.wait(ctx, 2*time.Second, "cycle") {
 		t.Fatal("wait вернул false")
 	}
 	if time.Since(start) > 800*time.Millisecond {
@@ -207,5 +208,51 @@ func TestCycleAllDoesNotWaitBetweenSites(t *testing.T) {
 	}
 	if dns.calls != 1 || ozon.calls != 1 {
 		t.Fatalf("dns %d ozon %d", dns.calls, ozon.calls)
+	}
+}
+
+func TestFormatCountdown(t *testing.T) {
+	if got := formatCountdown(5 * time.Second); got != "5 с" {
+		t.Fatalf("5 с: %q", got)
+	}
+	if got := formatCountdown(65 * time.Second); got != "1 мин 5 с" {
+		t.Fatalf("1 мин 5 с: %q", got)
+	}
+	if got := formatCountdown(3723 * time.Second); got != "1 ч 2 мин 3 с" {
+		t.Fatalf("1 ч 2 мин 3 с: %q", got)
+	}
+	if got := formatCountdown(-time.Second); got != "0 с" {
+		t.Fatalf("отрицательное: %q", got)
+	}
+}
+
+func TestStatusTextCountsDown(t *testing.T) {
+	tr := New(nil, nil, nil, Config{
+		Interval:     20 * time.Minute,
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+	tr.setUntil(time.Now().Add(90*time.Second), "cycle")
+	got := tr.StatusText()
+	if !strings.HasPrefix(got, "Следующая проверка через 1 мин ") {
+		t.Fatalf("отсчёт автоцикла: %q", got)
+	}
+	tr.setUntil(time.Now().Add(12*time.Second), "startup")
+	got = tr.StatusText()
+	if got != "Первая проверка через 12 с" && got != "Первая проверка через 11 с" {
+		t.Fatalf("отсчёт старта: %q", got)
+	}
+	tr.setStatus("%s", "Xiaomi")
+	tr.setUntil(time.Now().Add(45*time.Second), "gap")
+	got = tr.StatusText()
+	if !strings.Contains(got, "Пауза ") || !strings.Contains(got, "Xiaomi") {
+		t.Fatalf("пауза между товарами: %q", got)
+	}
+	tr.setStatus("%s", "Ошибка dns · сайт показал защиту")
+	tr.setUntil(time.Now().Add(20*time.Minute), "cycle")
+	got = tr.StatusText()
+	if !strings.Contains(got, "Ошибка dns") || !strings.Contains(got, "следующая проверка через") {
+		t.Fatalf("ошибка с отсчётом: %q", got)
 	}
 }
