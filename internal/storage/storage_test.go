@@ -171,6 +171,46 @@ func TestDeleteSubscription(t *testing.T) {
 	}
 }
 
+func TestDeleteProductSubscriptions(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	product, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.DeleteProductSubscriptions(ctx, product.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("снято подписок %d, ожидалось 2", n)
+	}
+
+	all, err := s.ListAllRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("в общем списке осталось %d", len(all))
+	}
+
+	if _, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ListAllRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 1 || again[0].Product.ID != product.ID {
+		t.Fatalf("повторное добавление должно вернуть ту же карточку: %+v", again)
+	}
+}
+
 func TestSharedProductURLIsNotOverwritten(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

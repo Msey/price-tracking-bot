@@ -285,3 +285,17 @@ func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64)
 	}
 	return affected > 0, nil
 }
+
+// DeleteProductSubscriptions снимает товар со всех чатов. Карточка
+// остаётся в базе, чтобы повторное /add не потеряло историю цен.
+func (s *Store) DeleteProductSubscriptions(ctx context.Context, productID int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE product_id = ?`, productID)
+	if err != nil {
+		return 0, fmt.Errorf("storage: удаление подписок на товар %d: %w", productID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("storage: результат удаления подписок: %w", err)
+	}
+	return n, nil
+}

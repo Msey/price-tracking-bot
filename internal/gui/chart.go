@@ -84,3 +84,17 @@ func firstPriceLabel(prices []int64, i int) bool {
 	}
 	return prices[i] != prices[i-1]
 }
+
+// trashLayout — график слева, урна справа: между ними зазор, у правого
+// края строки поле pad.
+func trashLayout(rowWidth, pad, gap, trash int) (chartWidth, trashX int) {
+	if trash < 0 {
+		trash = 0
+	}
+	trashX = rowWidth - pad - trash
+	chartWidth = trashX - pad - gap
+	if chartWidth < 0 {
+		chartWidth = 0
+	}
+	return
+}

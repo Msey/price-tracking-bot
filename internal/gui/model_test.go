@@ -2,6 +2,7 @@ package gui
 
 import (
 	"database/sql"
+	"image"
 	"testing"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
@@ -108,5 +109,40 @@ func TestFirstPriceLabel(t *testing.T) {
 	}
 	if !firstPriceLabel([]int64{7}, 0) {
 		t.Fatal("единственный узел подписывается")
+	}
+}
+
+func TestTrashLayoutLeavesGap(t *testing.T) {
+	chartW, trashX := trashLayout(400, 16, 8, 28)
+	if trashX != 400-16-28 {
+		t.Fatalf("урна X=%d", trashX)
+	}
+	if chartW != trashX-16-8 {
+		t.Fatalf("график W=%d", chartW)
+	}
+	if 16+chartW+8 > trashX {
+		t.Fatal("график наезжает на урну")
+	}
+}
+
+func TestTrashImageOutline(t *testing.T) {
+	img, ok := trashImage(64, trashMuted).(*image.RGBA)
+	if !ok {
+		t.Fatal("ожидался RGBA")
+	}
+	var painted int
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			c := img.RGBAAt(x, y)
+			if c.A > 0 {
+				painted++
+			}
+		}
+	}
+	if img.RGBAAt(0, 0).A != 0 {
+		t.Fatal("угол должен быть прозрачным")
+	}
+	if painted < 80 {
+		t.Fatalf("контур слишком пустой: %d пикселей", painted)
 	}
 }

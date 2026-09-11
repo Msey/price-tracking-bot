@@ -210,6 +210,21 @@ func Run(ctx context.Context, opt Options) error {
 		},
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
+	a.board.onDelete = a.deleteItem
+	idleTrash, err := walk.NewBitmapFromImage(trashImage(64, trashMuted))
+	if err != nil {
+		opt.Log.Warn("иконка корзины", "error", err)
+	} else {
+		keep(idleTrash)
+		a.board.trash = idleTrash
+	}
+	hotTrash, err := walk.NewBitmapFromImage(trashImage(64, iconGold))
+	if err != nil {
+		opt.Log.Warn("иконка корзины", "error", err)
+	} else {
+		keep(hotTrash)
+		a.board.trashHot = hotTrash
+	}
 	a.board.icons = map[string]walk.Image{}
 	for _, site := range sites.SitesWithIcons() {
 		img := siteImage(site)
@@ -358,6 +373,37 @@ func Run(ctx context.Context, opt Options) error {
 type disposeFunc func()
 
 func (f disposeFunc) Dispose() { f() }
+
+func (a *app) deleteItem(it Item) {
+	a.log.Info("удаление товара из окна", "product_id", it.ProductID, "title", it.Title)
+	msg := fmt.Sprintf("Снять «%s» с отслеживания?", it.Title)
+	if it.Watchers > 1 {
+		msg = fmt.Sprintf("«%s» отслеживают %d %s. Снять у всех?",
+			it.Title, it.Watchers, view.RuPlural(it.Watchers, "человек", "человека", "человек"))
+	}
+	if a.mw != nil && walk.MsgBox(a.mw, "Трекинг цен", msg, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+		return
+	}
+	if a.store == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		n, err := a.store.DeleteProductSubscriptions(ctx, it.ProductID)
+		a.onUI(func() {
+			if err != nil {
+				a.log.Error("удаление товара", "error", err)
+				if a.status != nil {
+					_ = a.status.SetText("Не удалось удалить товар")
+				}
+				return
+			}
+			a.log.Info("товар снят с отслеживания", "product_id", it.ProductID, "removed", n)
+			a.refresh(false)
+		})
+	}()
+}
 
 func (a *app) requestCheck() {
 	a.log.Info("нажата проверка цен")
