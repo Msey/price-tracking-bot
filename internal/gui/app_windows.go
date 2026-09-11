@@ -289,6 +289,9 @@ func Run(ctx context.Context, opt Options) error {
 	// Dispose идемпотентен, поэтому явный вызов в quit остаётся рабочим.
 	keep(disposeFunc(func() { _ = ni.Dispose() }))
 	a.ni = ni
+	if !hookTrayMenu(a.mw.Handle()) {
+		opt.Log.Warn("меню трея может открываться дважды: не удалось подменить оконную процедуру")
+	}
 	_ = ni.SetIcon(icon)
 	_ = ni.SetToolTip("Трекинг цен")
 	_ = ni.SetVisible(true)
