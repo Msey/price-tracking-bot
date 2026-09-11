@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
+	"github.com/Msey/price-tracking-bot/internal/diaglog"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/gui"
 	"github.com/Msey/price-tracking-bot/internal/sites"
@@ -26,28 +27,33 @@ import (
 
 func main() {
 	runtime.LockOSThread()
-	log, closeLog := newLogger()
+	log, logs, closeLog := newLogger()
 	if closeLog != nil {
 		defer closeLog()
 	}
 
-	if err := run(log); err != nil {
+	if err := run(log, logs); err != nil {
 		log.Error("бот остановлен с ошибкой", "error", err)
 		os.Exit(1)
 	}
 }
 
-func newLogger() (*slog.Logger, func()) {
-	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+func newLogger() (*slog.Logger, *diaglog.Switch, func()) {
+	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
+	logs := &diaglog.Switch{}
 	_ = os.MkdirAll("data", 0o755)
 	f, err := os.OpenFile(filepath.Join("data", "bot.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil
+		log := slog.New(diaglog.Wrap(slog.NewTextHandler(os.Stderr, opts), logs))
+		slog.SetDefault(log)
+		return log, logs, nil
 	}
-	return slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, f), opts)), func() { _ = f.Close() }
+	log := slog.New(diaglog.Wrap(slog.NewTextHandler(io.MultiWriter(os.Stderr, f), opts), logs))
+	slog.SetDefault(log)
+	return log, logs, func() { _ = f.Close() }
 }
 
-func run(log *slog.Logger) error {
+func run(log *slog.Logger, logs *diaglog.Switch) error {
 	cfg, err := config.Load()
 	if errors.Is(err, config.ErrNoToken) {
 		return errors.New("не задан BOT_TOKEN: скопируйте .env.example в .env и впишите токен от @BotFather")
@@ -125,14 +131,16 @@ func run(log *slog.Logger) error {
 	if cfg.GUI && gui.Available() {
 		go bot.Start(ctx)
 		err := gui.Run(ctx, gui.Options{
-			Store:       store,
-			DataPath:    cfg.DatabasePath,
-			Log:         log,
-			StartHidden: startHiddenFromArgs(os.Args[1:]),
-			BotUsername: bot.Username(),
-			CheckNow:    tr.RequestCheck,
-			CheckBusy:   tr.Busy,
-			CheckStatus: tr.StatusText,
+			Store:         store,
+			DataPath:      cfg.DatabasePath,
+			Log:           log,
+			StartHidden:   startHiddenFromArgs(os.Args[1:]),
+			BotUsername:   bot.Username(),
+			CheckNow:      tr.RequestCheck,
+			CheckBusy:     tr.Busy,
+			CheckStatus:   tr.StatusText,
+			LogEnabled:    logs.Enabled,
+			SetLogEnabled: logs.Set,
 		})
 		stop()
 		log.Info("бот остановлен")

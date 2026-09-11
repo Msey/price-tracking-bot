@@ -102,6 +102,7 @@ func (b *Bot) Start(ctx context.Context) {
 
 // Notify отправляет HTML-сообщение в личку. Нужен трекеру цен.
 func (b *Bot) Notify(_ context.Context, chatID int64, message string) error {
+	b.log.Info("отправка в Telegram", "chat_id", chatID, "bytes", len(message))
 	_, err := b.bot.Send(telebot.ChatID(chatID), message, telebot.NoPreview)
 	return err
 }
@@ -125,6 +126,7 @@ func (b *Bot) accessMiddleware(next telebot.HandlerFunc) telebot.HandlerFunc {
 }
 
 func (b *Bot) handleStart(c telebot.Context) error {
+	b.log.Info("команда /start", "chat_id", c.Chat().ID, "user_id", c.Sender().ID)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	if _, err := b.store.EnsureUser(ctx, c.Chat().ID); err != nil {
@@ -134,11 +136,13 @@ func (b *Bot) handleStart(c telebot.Context) error {
 }
 
 func (b *Bot) handleHelp(c telebot.Context) error {
+	b.log.Info("команда /help", "chat_id", c.Chat().ID)
 	return c.Send(helpText, telebot.NoPreview)
 }
 
 func (b *Bot) handleText(c telebot.Context) error {
 	text := strings.TrimSpace(c.Text())
+	b.log.Info("сообщение в чат", "chat_id", c.Chat().ID, "text", clipLog(text, 180))
 	if text == "" {
 		return nil
 	}
@@ -150,6 +154,7 @@ func (b *Bot) handleText(c telebot.Context) error {
 
 func (b *Bot) handleAdd(c telebot.Context) error {
 	args := strings.TrimSpace(strings.Join(c.Args(), " "))
+	b.log.Info("команда /add", "chat_id", c.Chat().ID, "args", clipLog(args, 180))
 	if args == "" {
 		return c.Send("Использование: /add &lt;ссылка на товар&gt;", telebot.NoPreview)
 	}
@@ -192,6 +197,7 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 }
 
 func (b *Bot) handleList(c telebot.Context) error {
+	b.log.Info("команда /list", "chat_id", c.Chat().ID)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
@@ -207,6 +213,7 @@ func (b *Bot) handleList(c telebot.Context) error {
 
 func (b *Bot) handleDelete(c telebot.Context) error {
 	args := c.Args()
+	b.log.Info("команда /del", "chat_id", c.Chat().ID, "args", strings.Join(args, " "))
 	if len(args) == 0 {
 		return c.Send("Использование: /del &lt;номер из /list&gt;", telebot.NoPreview)
 	}
@@ -235,11 +242,13 @@ func (b *Bot) handleDelete(c telebot.Context) error {
 	if !removed {
 		return c.Send("Этого товара уже нет в списке. Посмотрите /list.", telebot.NoPreview)
 	}
+	b.log.Info("подписка снята", "chat_id", c.Chat().ID, "product", item.Product.ID)
 	return c.Send("Снял с отслеживания:\n"+linkTo(item.Product), telebot.NoPreview)
 }
 
 func (b *Bot) handleUnsubButton(c telebot.Context) error {
 	productID, err := strconv.ParseInt(c.Data(), 10, 64)
+	b.log.Info("кнопка отписки", "chat_id", c.Chat().ID, "product", productID)
 	if err != nil || productID < 1 {
 		return c.Respond(&telebot.CallbackResponse{Text: "Не понял, какой это товар", ShowAlert: true})
 	}
@@ -341,4 +350,13 @@ func humanDuration(d time.Duration) string {
 		return fmt.Sprintf("%d ч", int(d.Hours()))
 	}
 	return fmt.Sprintf("%d мин", int(d.Minutes()))
+}
+
+func clipLog(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if n <= 1 || len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }

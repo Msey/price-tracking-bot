@@ -77,21 +77,25 @@ func releaseInstance() {
 }
 
 type app struct {
-	store       *storage.Store
-	dataPath    string
-	log         *slog.Logger
-	mw          *walk.MainWindow
-	board       *board
-	status      *walk.Label
-	ni          *walk.NotifyIcon
-	items       []Item
-	allowQuit   bool
-	loaded      bool
-	checkNow    func()
-	checkBusy   func() bool
-	checkStatus func() string
-	checkBtn    *walk.PushButton
-	captchaTold bool
+	store         *storage.Store
+	dataPath      string
+	log           *slog.Logger
+	mw            *walk.MainWindow
+	board         *board
+	status        *walk.Label
+	ni            *walk.NotifyIcon
+	items         []Item
+	allowQuit     bool
+	loaded        bool
+	checkNow      func()
+	checkBusy     func() bool
+	checkStatus   func() string
+	checkBtn      *walk.PushButton
+	logBtn        *walk.PushButton
+	logAct        *walk.Action
+	logEnabled    func() bool
+	setLogEnabled func(bool)
+	captchaTold   bool
 	// closed — цикл сообщений уже вышел, слать в него работу больше нельзя.
 	closed atomic.Bool
 	// watching — сторож проверки уже запущен; второй не нужен, иначе каждый
@@ -181,12 +185,14 @@ func Run(ctx context.Context, opt Options) error {
 	keep(icon)
 
 	a := &app{
-		store:       opt.Store,
-		dataPath:    opt.DataPath,
-		log:         opt.Log,
-		checkNow:    opt.CheckNow,
-		checkBusy:   opt.CheckBusy,
-		checkStatus: opt.CheckStatus,
+		store:         opt.Store,
+		dataPath:      opt.DataPath,
+		log:           opt.Log,
+		checkNow:      opt.CheckNow,
+		checkBusy:     opt.CheckBusy,
+		checkStatus:   opt.CheckStatus,
+		logEnabled:    opt.LogEnabled,
+		setLogEnabled: opt.SetLogEnabled,
 		board: &board{
 			titleFont: titleFont,
 			metaFont:  metaFont,
@@ -246,7 +252,8 @@ func Run(ctx context.Context, opt Options) error {
 					},
 					ui.HSpacer{},
 					ui.PushButton{AssignTo: &a.checkBtn, Text: "Проверить цены", MinSize: ui.Size{Width: 150, Height: 32}, OnClicked: a.requestCheck},
-					ui.PushButton{Text: "Обновить", MinSize: ui.Size{Width: 110, Height: 32}, OnClicked: func() { a.refresh(false) }},
+					ui.PushButton{AssignTo: &a.logBtn, Text: "Логи: выкл", MinSize: ui.Size{Width: 120, Height: 32}, OnClicked: a.toggleDiagLog},
+					ui.PushButton{Text: "Обновить", MinSize: ui.Size{Width: 110, Height: 32}, OnClicked: a.refreshClicked},
 					ui.PushButton{Text: "Папка с данными", MinSize: ui.Size{Width: 140, Height: 32}, OnClicked: a.openDataFolder},
 				},
 			},
@@ -263,6 +270,9 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	a.board.attach(canvas)
 	a.updateCheckUI()
+	if a.setLogEnabled == nil && a.logBtn != nil {
+		a.logBtn.SetVisible(false)
+	}
 	win.SetMenu(a.mw.Handle(), 0)
 	if tb := a.mw.ToolBar(); tb != nil {
 		tb.SetVisible(false)
@@ -313,11 +323,22 @@ func Run(ctx context.Context, opt Options) error {
 			return err
 		}
 	}
-	if err := addTrayAction(ni, "Обновить список", func() { a.refresh(false) }); err != nil {
+	if err := addTrayAction(ni, "Обновить список", a.refreshClicked); err != nil {
 		return err
 	}
 	if err := addTrayAction(ni, "Папка с данными", a.openDataFolder); err != nil {
 		return err
+	}
+	if a.setLogEnabled != nil {
+		logAct := walk.NewAction()
+		if err := logAct.SetText("Логи: выкл"); err != nil {
+			return err
+		}
+		logAct.Triggered().Attach(a.toggleDiagLog)
+		if err := ni.ContextMenu().Actions().Add(logAct); err != nil {
+			return err
+		}
+		a.logAct = logAct
 	}
 	if err := ni.ContextMenu().Actions().Add(walk.NewSeparatorAction()); err != nil {
 		return err
@@ -332,7 +353,8 @@ func Run(ctx context.Context, opt Options) error {
 
 	a.checkCtx = ctx
 	a.refresh(false)
-	opt.Log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
+	a.syncDiagLogUI()
+	a.log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
 	if opt.StartHidden {
 		a.hideToTray()
 		_ = ni.ShowInfo("Трекинг цен", "Бот в трее. Щелчок по иконке открывает окно.")
@@ -359,6 +381,7 @@ func addTrayAction(ni *walk.NotifyIcon, title string, fn func()) error {
 }
 
 func (a *app) requestCheck() {
+	a.log.Info("нажата проверка цен")
 	if a.checkNow == nil {
 		return
 	}
@@ -371,6 +394,40 @@ func (a *app) requestCheck() {
 	// поэтому сторож заводится только один.
 	if a.watching.CompareAndSwap(false, true) {
 		go a.watchCheck()
+	}
+}
+
+func (a *app) refreshClicked() {
+	a.log.Info("обновление списка в окне")
+	a.refresh(false)
+}
+
+func (a *app) toggleDiagLog() {
+	if a.setLogEnabled == nil {
+		return
+	}
+	on := a.logEnabled == nil || !a.logEnabled()
+	if on {
+		a.setLogEnabled(true)
+		a.log.Info("подробные логи включены")
+	} else {
+		a.log.Info("подробные логи выключены")
+		a.setLogEnabled(false)
+	}
+	a.syncDiagLogUI()
+}
+
+func (a *app) syncDiagLogUI() {
+	on := a.logEnabled != nil && a.logEnabled()
+	text := "Логи: выкл"
+	if on {
+		text = "Логи: вкл"
+	}
+	if a.logBtn != nil {
+		_ = a.logBtn.SetText(text)
+	}
+	if a.logAct != nil {
+		_ = a.logAct.SetText(text)
 	}
 }
 
@@ -460,10 +517,12 @@ func (a *app) updateCheckUI() {
 }
 
 func (a *app) hideToTray() {
+	a.log.Info("окно спрятано в трей")
 	a.mw.Hide()
 }
 
 func (a *app) showWindow() {
+	a.log.Info("окно открыто из трея")
 	a.onUI(func() {
 		a.mw.Show()
 		win.ShowWindow(a.mw.Handle(), win.SW_RESTORE)
@@ -473,6 +532,7 @@ func (a *app) showWindow() {
 }
 
 func (a *app) quit() {
+	a.log.Info("выход из приложения")
 	a.allowQuit = true
 	a.closed.Store(true)
 	if a.ni != nil {
@@ -600,6 +660,7 @@ func titlesOf(items []Item) []string {
 }
 
 func (a *app) openDataFolder() {
+	a.log.Info("открыта папка с данными")
 	path := a.dataPath
 	if path == "" {
 		path = "bot.db"
@@ -616,6 +677,7 @@ func openURL(raw string) {
 	if raw == "" {
 		return
 	}
+	slog.Info("открываю ссылку", "url", raw)
 	_ = exec.Command(systemExe(`System32\rundll32.exe`), "url.dll,FileProtocolHandler", raw).Start()
 }
 

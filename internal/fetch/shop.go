@@ -78,19 +78,23 @@ func (s *Shop) Close() {
 }
 
 func (s *Shop) Fetch(ctx context.Context, p storage.Product) (Snapshot, error) {
+	s.log.Info("запрос карточки", "site", s.cfg.site, "url", p.URL, "city", p.City)
 	if !s.breaker.Allow() {
+		s.log.Info("карточка пропущена, предохранитель", "site", s.cfg.site, "until", s.breaker.RetryAt(), "reason", s.breaker.Reason())
 		return Snapshot{}, fmt.Errorf("%w: пауза до %s (%s)",
 			ErrChallenge, s.breaker.RetryAt().Format(time.RFC3339), s.breaker.Reason())
 	}
 
 	snap, err := s.browser.do(ctx, s.cfg.pageWait, p, s.cfg.parse)
 	if err != nil {
+		s.log.Info("карточка не прочитана", "site", s.cfg.site, "url", p.URL, "error", err)
 		s.maybeTrip(err)
 		if errors.Is(err, ErrChallenge) || errors.Is(err, ErrNoPrice) || errors.Is(err, context.DeadlineExceeded) {
 			return Snapshot{}, err
 		}
 		return Snapshot{}, fmt.Errorf("%s: навигация %s: %w", s.cfg.site, p.URL, err)
 	}
+	s.log.Info("карточка прочитана", "site", s.cfg.site, "name", snap.Name, "kopecks", snap.PriceKopecks, "available", snap.Available)
 	return snap, nil
 }
 

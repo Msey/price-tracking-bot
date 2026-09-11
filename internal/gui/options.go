@@ -20,4 +20,8 @@ type Options struct {
 	CheckBusy func() bool
 	// CheckStatus — текст текущего шага проверки для строки статуса.
 	CheckStatus func() string
+	// LogEnabled / SetLogEnabled — тумблер подробных логов на панели.
+	// По умолчанию выключен: Info/Debug не пишутся, Warn/Error остаются.
+	LogEnabled    func() bool
+	SetLogEnabled func(bool)
 }

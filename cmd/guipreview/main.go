@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/diaglog"
 	"github.com/Msey/price-tracking-bot/internal/gui"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
@@ -50,5 +51,12 @@ func run(log *slog.Logger) error {
 
 	runCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	return gui.Run(runCtx, gui.Options{Store: store, DataPath: dir, Log: log})
+	logs := &diaglog.Switch{}
+	return gui.Run(runCtx, gui.Options{
+		Store:         store,
+		DataPath:      dir,
+		Log:           log,
+		LogEnabled:    logs.Enabled,
+		SetLogEnabled: logs.Set,
+	})
 }

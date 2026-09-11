@@ -94,6 +94,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "метод не поддерживается", http.StatusMethodNotAllowed)
 		return
 	}
+	s.log.Info("открыта страница заявок", "remote", r.RemoteAddr)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 

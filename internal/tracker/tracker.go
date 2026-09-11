@@ -117,6 +117,7 @@ func (t *Tracker) setStatus(format string, args ...any) {
 	t.statusMu.Lock()
 	t.status = msg
 	t.statusMu.Unlock()
+	t.log.Debug("статус", "text", msg)
 }
 
 // SetUserHint пишет в статус то, что должен увидеть человек — например капчу.
@@ -190,6 +191,7 @@ func (t *Tracker) wait(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
+	t.log.Debug("пауза трекера", "duration", d)
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -284,6 +286,7 @@ func (t *Tracker) fetchList(ctx context.Context, site string, skipGap bool, due 
 		}
 		t.lastHit = time.Now()
 		t.setStatus("Проверяю %s · %d/%d · %s", site, i+1, len(due), p.Title())
+		t.log.Info("проверяю товар", "site", site, "n", i+1, "of", len(due), "product", p.ID, "url", p.URL)
 		if err := t.checkOne(ctx, p); err != nil {
 			t.log.Warn("проверка не удалась", "site", site, "product", p.ID, "url", p.URL, "error", err)
 			t.setStatus("Ошибка %s · %s", site, clipStatus(err.Error(), 180))
@@ -308,6 +311,7 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 	if err != nil {
 		return err
 	}
+	t.log.Info("цена записана", "site", p.Site, "product", p.ID, "name", snap.Name, "kopecks", snap.PriceKopecks, "available", snap.Available)
 	if err := t.store.RecordSnapshot(ctx, p.ID, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available); err != nil {
 		return err
 	}
@@ -325,6 +329,7 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 	case d.Baseline:
 		return t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available)
 	case d.Notify:
+		t.log.Info("цена изменилась, уведомляю", "product", p.ID, "from", d.Previous.PriceKopecks, "to", d.Current.PriceKopecks)
 		product, err := t.store.ProductByID(ctx, p.ID)
 		if err != nil {
 			product = p
@@ -349,6 +354,7 @@ func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) e
 	msg := formatChange(p, d)
 	var first error
 	for _, chatID := range chats {
+		t.log.Info("отправляю уведомление", "chat_id", chatID, "product", p.ID)
 		if err := t.notify.Notify(ctx, chatID, msg); err != nil && first == nil {
 			first = err
 		}

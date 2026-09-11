@@ -143,6 +143,7 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	}
 	b.job.Store(j)
 	defer b.job.CompareAndSwap(j, nil)
+	b.log.Info("задача расширению", "site", p.Site, "url", p.URL, "timeout", timeout)
 
 	if err := b.ensureLocked(p.URL); err != nil {
 		return Snapshot{}, err
@@ -398,6 +399,7 @@ func (b *Browser) handleWaitJob(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-timer.C:
+			b.log.Debug("расширение ждало задачу, пока пусто")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case <-b.kick:
@@ -422,18 +424,31 @@ func (b *Browser) handleResult(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	var msg extResult
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&msg); err != nil {
+		b.log.Debug("расширение прислало битый JSON", "error", err)
 		http.Error(w, "json", http.StatusBadRequest)
 		return
 	}
 	j := b.job.Load()
 	if j == nil {
+		b.log.Debug("результат без активной задачи", "href", msg.Href, "title", msg.Bits.Title)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if msg.Href != "" && !sameShopURL(j.url, msg.Href) {
+		b.log.Debug("результат с чужого адреса", "job", j.url, "href", msg.Href, "title", msg.Bits.Title)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	b.log.Debug("снимок страницы",
+		"site", j.site,
+		"href", msg.Href,
+		"title", msg.Bits.Title,
+		"qrator", msg.Bits.QRATOR,
+		"challenge", msg.Bits.Challenge,
+		"blocked", msg.Bits.Blocked,
+		"css", strings.TrimSpace(msg.Bits.CSSPrice) != "",
+		"ldjson", len(msg.Bits.LDJSON),
+	)
 	select {
 	case j.bits <- msg.Bits:
 	default:
