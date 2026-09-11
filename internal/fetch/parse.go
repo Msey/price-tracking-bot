@@ -48,6 +48,9 @@ func botWall(p pageBits) bool {
 }
 
 func parseBits(p pageBits) (Snapshot, error) {
+	if hardBlocked(p) {
+		return Snapshot{}, ErrChallenge
+	}
 	if botWall(p) && strings.TrimSpace(p.CSSPrice) == "" && len(p.LDJSON) == 0 {
 		return Snapshot{}, ErrChallenge
 	}
@@ -75,16 +78,14 @@ func parseBits(p pageBits) (Snapshot, error) {
 
 func hardBlocked(p pageBits) bool {
 	t := strings.ToLower(strings.TrimSpace(p.Title))
-	return strings.Contains(t, "403") || strings.Contains(t, "401") ||
-		strings.Contains(t, "not a robot")
+	return strings.Contains(t, "403") || strings.Contains(t, "401")
 }
 
-// needsHuman — на странице капча или антибот, без человека дальше не прочитать цену.
-func needsHuman(p pageBits, parseErr error) bool {
-	if p.QRATOR || p.Challenge || hardBlocked(p) {
-		return true
-	}
-	return errors.Is(parseErr, ErrChallenge)
+// needsHuman — на странице есть интерактивная капча, которую человек может
+// пройти в окне Chrome. QRATOR в HTML и HTTP 403 сюда не входят: скрипт
+// защиты есть на каждой карточке DNS, а бан по IP кнопкой не снимается.
+func needsHuman(p pageBits) bool {
+	return p.Challenge && !hardBlocked(p)
 }
 
 type ldNode struct {

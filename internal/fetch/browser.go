@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
@@ -27,6 +28,10 @@ type Browser struct {
 	browser       context.Context
 	browserCancel context.CancelFunc
 	onChallenge   func(string)
+	// wantHidden — окно Chrome должно быть снято с панели задач. Снимается
+	// только на время интерактивной капчи.
+	wantHidden atomic.Bool
+	hideStop   chan struct{}
 }
 
 type chromeUI struct {
@@ -76,6 +81,7 @@ func (b *Browser) Close() {
 }
 
 func (b *Browser) stopLocked() {
+	b.stopHideWatchLocked()
 	if b.browserCancel != nil {
 		b.browserCancel()
 		b.browserCancel = nil
@@ -143,17 +149,11 @@ func (b *Browser) ensureLocked() error {
 		}
 		killChromeWithProfile(b.profileDir)
 		clearStaleProfileLocks(b.profileDir)
+		markChromeExitedCleanly(b.profileDir)
 	}
 
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts,
-		chromedp.Flag("headless", b.headless),
-		chromedp.Flag("start-minimized", !b.headless),
-		chromedp.UserAgent(chromeUA),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("mute-audio", true),
-		chromedp.WindowSize(1280, 900),
-	)
+	opts = append(opts, chromeLaunchFlags(b.headless)...)
 	if b.profileDir != "" {
 		opts = append(opts, chromedp.UserDataDir(b.profileDir))
 	}
@@ -163,7 +163,12 @@ func (b *Browser) ensureLocked() error {
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(string, ...any) {}))
+	b.wantHidden.Store(!b.headless)
+	if !b.headless {
+		b.startHideWatchLocked()
+	}
 	if err := chromedp.Run(browserCtx); err != nil {
+		b.stopHideWatchLocked()
 		allocCancel()
 		browserCancel()
 		return fmt.Errorf("chrome: запуск: %w", chromeStartError(b.profileDir, err))
@@ -174,9 +179,30 @@ func (b *Browser) ensureLocked() error {
 	b.browserCancel = browserCancel
 	if !b.headless {
 		_ = chromedp.Run(browserCtx, minimizeChromeWindow())
+		hideChromeWindows()
 	}
-	b.log.Info("chrome запущен", "headless", b.headless, "minimized", !b.headless, "profile", b.profileDir, "exe", b.chromePath)
+	b.log.Info("chrome запущен", "headless", b.headless, "hidden", !b.headless, "profile", b.profileDir, "exe", b.chromePath)
 	return nil
+}
+
+// chromeLaunchFlags перекрывает DefaultExecAllocatorOptions: там стоит
+// enable-automation=true, из‑за него жёлтая полоса «браузером управляет
+// автоматизированное тестовое ПО». false в карте chromedp просто не
+// передаёт флаг; exclude-switches убирает его, если Chrome добавил сам
+// из‑за remote-debugging-port.
+func chromeLaunchFlags(headless bool) []chromedp.ExecAllocatorOption {
+	return []chromedp.ExecAllocatorOption{
+		chromedp.Flag("headless", headless),
+		chromedp.Flag("start-minimized", !headless),
+		chromedp.UserAgent(chromeUA),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("enable-automation", false),
+		chromedp.Flag("exclude-switches", "enable-automation"),
+		chromedp.Flag("hide-crash-restore-bubble", true),
+		chromedp.Flag("disable-session-crashed-bubble", true),
+		chromedp.Flag("mute-audio", true),
+		chromedp.WindowSize(1280, 900),
+	}
 }
 
 func (b *Browser) ui() *chromeUI {
@@ -185,18 +211,59 @@ func (b *Browser) ui() *chromeUI {
 	}
 	return &chromeUI{
 		reveal: func(ctx context.Context) error {
+			b.wantHidden.Store(false)
+			showChromeWindows()
 			return chromedp.Run(ctx, showChromeWindow())
 		},
 		hide: func() error {
+			b.wantHidden.Store(true)
 			if b.browser == nil || b.browser.Err() != nil {
+				hideChromeWindows()
 				return nil
 			}
 			ctx, cancel := context.WithTimeout(b.browser, 5*time.Second)
 			defer cancel()
-			return chromedp.Run(ctx, minimizeChromeWindow())
+			err := chromedp.Run(ctx, minimizeChromeWindow())
+			hideChromeWindows()
+			return err
 		},
 		notify: b.noteChallenge,
 	}
+}
+
+func (b *Browser) startHideWatchLocked() {
+	if b.hideStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	b.hideStop = stop
+	go func() {
+		ticker := time.NewTicker(300 * time.Millisecond)
+		defer ticker.Stop()
+		n := 0
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if b.wantHidden.Load() {
+					hideChromeWindows()
+				}
+				n++
+				if n == 20 {
+					ticker.Reset(time.Second)
+				}
+			}
+		}
+	}()
+}
+
+func (b *Browser) stopHideWatchLocked() {
+	if b.hideStop == nil {
+		return
+	}
+	close(b.hideStop)
+	b.hideStop = nil
 }
 
 func (b *Browser) noteChallenge(bits pageBits) {
@@ -265,6 +332,31 @@ func clearStaleProfileLocks(dir string) {
 		"lockfile", "DevToolsActivePort",
 	} {
 		_ = os.Remove(filepath.Join(dir, name))
+	}
+}
+
+// markChromeExitedCleanly убирает «сессия завершена некорректно»: иначе после
+// Stop-Process Chrome показывает диалог восстановления и вылезает на экран.
+func markChromeExitedCleanly(dir string) {
+	if dir == "" {
+		return
+	}
+	repl := strings.NewReplacer(
+		`"exited_cleanly":false`, `"exited_cleanly":true`,
+		`"exited_cleanly": false`, `"exited_cleanly": true`,
+		`"exit_type":"Crashed"`, `"exit_type":"Normal"`,
+		`"exit_type": "Crashed"`, `"exit_type": "Normal"`,
+	)
+	for _, rel := range []string{"Local State", filepath.Join("Default", "Preferences")} {
+		p := filepath.Join(dir, rel)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		n := repl.Replace(string(b))
+		if n != string(b) {
+			_ = os.WriteFile(p, []byte(n), 0o644)
+		}
 	}
 }
 

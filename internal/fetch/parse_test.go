@@ -117,14 +117,27 @@ func TestHardBlockedTitle(t *testing.T) {
 }
 
 func TestNeedsHuman(t *testing.T) {
-	if !needsHuman(pageBits{Challenge: true}, ErrNoPrice) {
+	if !needsHuman(pageBits{Challenge: true}) {
 		t.Fatal("капча должна звать человека")
 	}
-	if !needsHuman(pageBits{}, ErrChallenge) {
-		t.Fatal("ErrChallenge должен звать человека")
+	if needsHuman(pageBits{QRATOR: true}) {
+		t.Fatal("QRATOR в HTML — не интерактивная капча, окно не открываем")
 	}
-	if needsHuman(pageBits{Title: "Товар"}, ErrNoPrice) {
+	if needsHuman(pageBits{Title: "HTTP 403"}) {
+		t.Fatal("403 — бан, а не капча: окно не открываем")
+	}
+	if needsHuman(pageBits{Challenge: true, Title: "HTTP 403"}) {
+		t.Fatal("403 важнее виджета капчи: окно не открываем")
+	}
+	if needsHuman(pageBits{Title: "Товар"}) {
 		t.Fatal("обычная страница без цены — не капча")
+	}
+}
+
+func TestParseBitsHardBlocked(t *testing.T) {
+	_, err := parseBits(pageBits{Title: "HTTP 403"})
+	if !errors.Is(err, ErrChallenge) {
+		t.Fatalf("403 должен быть ErrChallenge, получено %v", err)
 	}
 }
 

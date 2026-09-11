@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,4 +31,36 @@ func TestDecodeProcessOutputCP1251(t *testing.T) {
 	if !looksLikeExistingSession(got) {
 		t.Fatal("не узнали чужой сеанс Chrome")
 	}
+}
+
+func TestMarkChromeExitedCleanly(t *testing.T) {
+	dir := t.TempDir()
+	pref := filepath.Join(dir, "Default")
+	if err := os.MkdirAll(pref, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"profile":{"exited_cleanly":false,"exit_type":"Crashed"}}`)
+	if err := os.WriteFile(filepath.Join(dir, "Local State"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pref, "Preferences"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markChromeExitedCleanly(dir)
+	got, err := os.ReadFile(filepath.Join(dir, "Local State"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if strings.Contains(s, `"exited_cleanly":false`) || strings.Contains(s, `"exit_type":"Crashed"`) {
+		t.Fatalf("не почистили краш: %s", s)
+	}
+	if !strings.Contains(s, `"exited_cleanly":true`) || !strings.Contains(s, `"exit_type":"Normal"`) {
+		t.Fatalf("ожидался чистый выход: %s", s)
+	}
+}
+
+func TestHideChromeWindowsDoesNotPanic(t *testing.T) {
+	hideChromeWindows()
+	showChromeWindows()
 }

@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,8 +18,8 @@ const (
 )
 
 // waitForExtract крутит extract-скрипт на открытой странице, пока не появится
-// цена или не выйдет время. Если упёрлись в капчу, окно Chrome показывается
-// пользователю и срок ожидания продлевается до captchaWait.
+// цена или не выйдет время. Окно Chrome показывается только на интерактивной
+// капче (Ozon/Маркет), не на бан DNS 403 и не из‑за скрипта QRATOR в HTML.
 func waitForExtract(ctx context.Context, timeout time.Duration, js string, parse func(pageBits) (Snapshot, error), ui *chromeUI) (Snapshot, error) {
 	if timeout <= 0 {
 		timeout = pageWait
@@ -39,12 +40,15 @@ func waitForExtract(ctx context.Context, timeout time.Duration, js string, parse
 		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &last)); err != nil {
 			return Snapshot{}, err
 		}
+		if hardBlocked(last) {
+			return Snapshot{}, ErrChallenge
+		}
 		snap, err := parse(last)
 		if err == nil {
 			return snap, nil
 		}
 		lastErr = err
-		if needsHuman(last, lastErr) && ui != nil && !shown {
+		if needsHuman(last) && ui != nil && !shown {
 			shown = true
 			_ = ui.reveal(ctx)
 			if ui.notify != nil {
@@ -57,14 +61,14 @@ func waitForExtract(ctx context.Context, timeout time.Duration, js string, parse
 
 		select {
 		case <-ctx.Done():
-			if needsHuman(last, lastErr) {
+			if needsHuman(last) || errors.Is(lastErr, ErrChallenge) {
 				return Snapshot{}, ErrChallenge
 			}
 			return Snapshot{}, ctx.Err()
 		case <-time.After(pollEvery):
 		}
 		if time.Now().After(deadline) {
-			if needsHuman(last, lastErr) {
+			if needsHuman(last) {
 				return Snapshot{}, ErrChallenge
 			}
 			if last.Title != "" {
