@@ -33,6 +33,7 @@ func TestLiveDNSFetch(t *testing.T) {
 	defer cancel()
 
 	snap, err := d.Fetch(ctx, storage.Product{
+		Site: "dns",
 		URL:  "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/",
 		City: "moscow",
 	})

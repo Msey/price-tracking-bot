@@ -2,44 +2,60 @@ package fetch
 
 import (
 	"context"
+	"crypto/rand"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/chromedp/cdproto/browser"
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
+	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
-// Browser — один долгоживущий Chrome на все магазины.
+//go:embed ext/manifest.json ext/background.js ext/extract.js
+var extFS embed.FS
+
+// Browser — один долгоживущий Chrome на все магазины. Страницы читает
+// расширение в обычном Chrome, без remote-debugging-pipe/port: CDP Ozon
+// принимает за бота и показывает «Похоже, нет соединения».
 type Browser struct {
-	mu            sync.Mutex
-	log           *slog.Logger
-	profileDir    string
-	chromePath    string
-	headless      bool
-	allocCancel   context.CancelFunc
-	browser       context.Context
-	browserCancel context.CancelFunc
-	onChallenge   func(string)
-	// wantHidden — окно Chrome должно быть снято с панели задач. Снимается
-	// только на время интерактивной капчи.
-	wantHidden atomic.Bool
-	hideStop   chan struct{}
+	mu          sync.Mutex
+	log         *slog.Logger
+	profileDir  string
+	chromePath  string
+	token       string
+	addr        string
+	srv         *http.Server
+	cmd         *exec.Cmd
+	job         atomic.Pointer[extJob]
+	kick        chan struct{}
+	extSeen     chan struct{}
+	chromeDead  atomic.Bool
+	extID       string
+	onChallenge func(string)
 }
 
-type chromeUI struct {
-	reveal func(context.Context) error
-	// hide сворачивает окно по своему контексту: прятать Chrome нужно и после
-	// того, как время на капчу вышло и контекст страницы уже погас.
-	hide   func() error
-	notify func(pageBits)
+type extJob struct {
+	url, site, city string
+	sent            atomic.Bool
+	bits            chan pageBits
+}
+
+type extResult struct {
+	Href string   `json:"href"`
+	Bits pageBits `json:"bits"`
 }
 
 type BrowserOptions struct {
@@ -59,15 +75,19 @@ func NewBrowser(opt BrowserOptions) *Browser {
 			profile = abs
 		}
 	}
-	return &Browser{
+	b := &Browser{
 		log:        opt.Log,
 		profileDir: profile,
 		chromePath: resolveChromePath(opt.ChromePath),
-		headless:   opt.Headless,
+		kick:       make(chan struct{}, 1),
 	}
+	if profile != "" {
+		killChromeWithProfile(profile)
+	}
+	_ = opt.Headless
+	return b
 }
 
-// SetOnChallenge вызывает fn, когда свёрнутый Chrome разворачивают из‑за капчи.
 func (b *Browser) SetOnChallenge(fn func(string)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -81,249 +101,457 @@ func (b *Browser) Close() {
 }
 
 func (b *Browser) stopLocked() {
-	b.stopHideWatchLocked()
-	if b.browserCancel != nil {
-		b.browserCancel()
-		b.browserCancel = nil
+	b.job.Store(nil)
+	if b.srv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = b.srv.Shutdown(ctx)
+		cancel()
+		b.srv = nil
 	}
-	if b.allocCancel != nil {
-		b.allocCancel()
-		b.allocCancel = nil
-	}
-	b.browser = nil
+	b.stopChromeLocked()
+	b.addr = ""
+	b.extSeen = nil
+	b.chromeDead.Store(false)
 }
 
-func (b *Browser) do(ctx context.Context, timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
+func (b *Browser) stopChromeLocked() {
+	if b.profileDir != "" {
+		killChromeWithProfile(b.profileDir)
+	}
+	b.cmd = nil
+}
+
+func (b *Browser) chromeAlive() bool {
+	return b.cmd != nil && b.cmd.Process != nil && !b.chromeDead.Load()
+}
+
+func (b *Browser) do(ctx context.Context, timeout time.Duration, p storage.Product, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	snap, err := b.doLocked(ctx, timeout, setup, extractJS, parse)
-	if err != nil && isChromeStartError(err) && ctx.Err() == nil {
-		b.log.Warn("chrome перезапуск после сбоя", "error", err)
-		b.stopLocked()
-		return b.doLocked(ctx, timeout, setup, extractJS, parse)
-	}
-	return snap, err
+	return b.doLocked(ctx, timeout, p, parse)
 }
 
-func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, setup []chromedp.Action, extractJS string, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
-	if err := b.ensureLocked(); err != nil {
+func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage.Product, parse func(pageBits) (Snapshot, error)) (Snapshot, error) {
+	if timeout <= 0 {
+		timeout = pageWait
+	}
+	j := &extJob{
+		url:  p.URL,
+		site: p.Site,
+		city: p.City,
+		bits: make(chan pageBits, 8),
+	}
+	b.job.Store(j)
+	defer b.job.CompareAndSwap(j, nil)
+
+	if err := b.ensureLocked(p.URL); err != nil {
 		return Snapshot{}, err
 	}
 
-	runCtx, cancel := context.WithTimeout(b.browser, timeout+captchaWait+15*time.Second)
-	defer cancel()
-	// Контекст страницы растёт из контекста Chrome, а не из ctx вызывающего:
-	// иначе выход из приложения убил бы весь браузер. Отмену пробрасываем
-	// сторожем, чтобы остановка бота не ждала всю страницу с капчей.
-	watchDone := make(chan struct{})
-	defer close(watchDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			cancel()
-		case <-watchDone:
-		}
-	}()
-
-	if err := chromedp.Run(runCtx, setup...); err != nil {
-		return Snapshot{}, err
-	}
-	return waitForExtract(runCtx, timeout, extractJS, parse, b.ui())
+	return waitForBits(ctx, timeout, j.bits, parse, b.noteChallenge)
 }
 
-func (b *Browser) ensureLocked() error {
-	if b.browser != nil {
-		if b.browser.Err() == nil {
+func (b *Browser) poke() {
+	select {
+	case b.kick <- struct{}{}:
+	default:
+	}
+}
+
+func (b *Browser) ensureLocked(startURL string) error {
+	if startURL == "" {
+		startURL = "about:blank"
+	}
+	if b.chromeAlive() {
+		if b.extReady() {
+			b.navigateLocked(startURL)
 			return nil
 		}
-		// Chrome упал или пользователь закрыл окно, в котором проходил капчу.
-		// chromedp гасит контекст навсегда, поэтому браузер нужно поднять
-		// заново — иначе все проверки молча падают до перезапуска бота.
-		b.log.Warn("chrome отключился, поднимаем заново", "error", b.browser.Err())
-		b.stopLocked()
+		b.log.Warn("chrome жив, но расширение молчит — перезапускаю")
+		b.stopChromeLocked()
+	} else {
+		b.stopChromeLocked()
 	}
-	if b.profileDir != "" {
-		if err := os.MkdirAll(b.profileDir, 0o755); err != nil {
-			return fmt.Errorf("chrome: профиль %s: %w", b.profileDir, err)
+
+	if b.chromePath == "" {
+		return fmt.Errorf("chrome: не найден chrome.exe")
+	}
+	if b.profileDir == "" {
+		return fmt.Errorf("chrome: не задан профиль")
+	}
+	if err := os.MkdirAll(b.profileDir, 0o755); err != nil {
+		return fmt.Errorf("chrome: профиль %s: %w", b.profileDir, err)
+	}
+
+	if err := b.ensureServerLocked(); err != nil {
+		return err
+	}
+
+	extDir, err := b.writeExtension()
+	if err != nil {
+		return err
+	}
+	if !profileMentionsExtension(b.profileDir, extDir) {
+		b.log.Info("ставлю расширение в профиль", "ext", extDir)
+		id, err := installUnpackedToProfile(b.chromePath, b.profileDir, extDir)
+		if err != nil {
+			b.log.Warn("расширение не закрепилось в профиле", "error", err)
+		} else {
+			b.extID = id
+			b.log.Info("расширение поставлено", "id", id, "saved", true)
 		}
-		killChromeWithProfile(b.profileDir)
-		clearStaleProfileLocks(b.profileDir)
-		markChromeExitedCleanly(b.profileDir)
 	}
 
-	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts, chromeLaunchFlags(b.headless)...)
-	if b.profileDir != "" {
-		opts = append(opts, chromedp.UserDataDir(b.profileDir))
+	if err := b.launchShoppingLocked(extDir, startURL); err != nil {
+		return err
 	}
-	if b.chromePath != "" {
-		opts = append(opts, chromedp.ExecPath(b.chromePath))
+	if b.waitExtLocked(12 * time.Second) {
+		return nil
 	}
+	b.log.Warn("расширение не подключилось, ставлю в профиль и пробую ещё раз")
+	b.stopChromeLocked()
+	id, err := installUnpackedToProfile(b.chromePath, b.profileDir, extDir)
+	if err != nil {
+		b.log.Warn("не удалось закрепить расширение", "error", err)
+	} else {
+		b.extID = id
+		b.log.Info("расширение поставлено", "id", id, "saved", profileMentionsExtension(b.profileDir, extDir))
+	}
+	if err := b.launchShoppingLocked(extDir, startURL); err != nil {
+		return err
+	}
+	if b.waitExtLocked(12 * time.Second) {
+		return nil
+	}
+	return fmt.Errorf("chrome: расширение не подключилось")
+}
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(string, ...any) {}))
-	b.wantHidden.Store(!b.headless)
-	if !b.headless {
-		b.startHideWatchLocked()
+func (b *Browser) launchShoppingLocked(extDir, startURL string) error {
+	clearStaleProfileLocks(b.profileDir)
+	markChromeExitedCleanly(b.profileDir)
+	bustExtensionCache(b.profileDir)
+	exceptID := ""
+	if b.extID != "" && profileMentionsExtension(b.profileDir, extDir) {
+		exceptID = b.extID
 	}
-	if err := chromedp.Run(browserCtx); err != nil {
-		b.stopHideWatchLocked()
-		allocCancel()
-		browserCancel()
-		return fmt.Errorf("chrome: запуск: %w", chromeStartError(b.profileDir, err))
+	b.extSeen = make(chan struct{})
+	cmd, err := startChrome(b.chromePath, b.profileDir, extDir, exceptID, startURL)
+	if err != nil {
+		return fmt.Errorf("chrome: запуск: %w", err)
 	}
-
-	b.allocCancel = allocCancel
-	b.browser = browserCtx
-	b.browserCancel = browserCancel
-	if !b.headless {
-		_ = chromedp.Run(browserCtx, minimizeChromeWindow())
-		hideChromeWindows()
-	}
-	b.log.Info("chrome запущен", "headless", b.headless, "hidden", !b.headless, "profile", b.profileDir, "exe", b.chromePath)
+	b.cmd = cmd
+	b.chromeDead.Store(false)
+	go func() {
+		_ = cmd.Wait()
+		b.chromeDead.Store(true)
+	}()
+	b.log.Info("chrome запущен", "profile", b.profileDir, "exe", b.chromePath, "ext", "http://"+b.addr, "url", startURL)
 	return nil
 }
 
-// chromeLaunchFlags перекрывает DefaultExecAllocatorOptions: там стоит
-// enable-automation=true, из‑за него жёлтая полоса «браузером управляет
-// автоматизированное тестовое ПО». false в карте chromedp просто не
-// передаёт флаг; exclude-switches убирает его, если Chrome добавил сам
-// из‑за remote-debugging-port.
-func chromeLaunchFlags(headless bool) []chromedp.ExecAllocatorOption {
-	return []chromedp.ExecAllocatorOption{
-		chromedp.Flag("headless", headless),
-		chromedp.Flag("start-minimized", !headless),
-		chromedp.UserAgent(chromeUA),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("enable-automation", false),
-		chromedp.Flag("exclude-switches", "enable-automation"),
-		chromedp.Flag("hide-crash-restore-bubble", true),
-		chromedp.Flag("disable-session-crashed-bubble", true),
-		chromedp.Flag("mute-audio", true),
-		chromedp.WindowSize(1280, 900),
+func (b *Browser) extReady() bool {
+	if b.extSeen == nil {
+		return false
+	}
+	select {
+	case <-b.extSeen:
+		return true
+	default:
+		return false
 	}
 }
 
-func (b *Browser) ui() *chromeUI {
-	if b.headless {
+func (b *Browser) waitExtLocked(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if b.chromeDead.Load() {
+			return false
+		}
+		if b.extReady() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return b.extReady()
+}
+
+func (b *Browser) ensureServerLocked() error {
+	if b.srv != nil {
 		return nil
 	}
-	return &chromeUI{
-		reveal: func(ctx context.Context) error {
-			b.wantHidden.Store(false)
-			showChromeWindows()
-			return chromedp.Run(ctx, showChromeWindow())
-		},
-		hide: func() error {
-			b.wantHidden.Store(true)
-			if b.browser == nil || b.browser.Err() != nil {
-				hideChromeWindows()
-				return nil
-			}
-			ctx, cancel := context.WithTimeout(b.browser, 5*time.Second)
-			defer cancel()
-			err := chromedp.Run(ctx, minimizeChromeWindow())
-			hideChromeWindows()
-			return err
-		},
-		notify: b.noteChallenge,
+	if err := b.ensureToken(); err != nil {
+		return err
 	}
-}
-
-func (b *Browser) startHideWatchLocked() {
-	if b.hideStop != nil {
-		return
-	}
-	stop := make(chan struct{})
-	b.hideStop = stop
-	go func() {
-		ticker := time.NewTicker(300 * time.Millisecond)
-		defer ticker.Stop()
-		n := 0
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				if b.wantHidden.Load() {
-					hideChromeWindows()
-				}
-				n++
-				if n == 20 {
-					ticker.Reset(time.Second)
-				}
-			}
+	ln, err := net.Listen("tcp", "127.0.0.1:18732")
+	if err != nil {
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("chrome: слушатель: %w", err)
 		}
-	}()
+	}
+	b.addr = ln.Addr().String()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ext/ping", b.handlePing)
+	mux.HandleFunc("/ext/wait-job", b.handleWaitJob)
+	mux.HandleFunc("/ext/result", b.handleResult)
+	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = b.srv.Serve(ln) }()
+	return nil
 }
 
-func (b *Browser) stopHideWatchLocked() {
-	if b.hideStop == nil {
+func (b *Browser) navigateLocked(startURL string) {
+	b.poke()
+	b.log.Info("открываю карточку через расширение", "url", startURL)
+}
+
+func (b *Browser) writeExtension() (string, error) {
+	dir := extensionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("chrome: каталог расширения: %w", err)
+	}
+	if err := copyEmbeddedExt(dir); err != nil {
+		return "", err
+	}
+	_ = os.Remove(filepath.Join(dir, "config.js"))
+	if err := stampManifest(dir); err != nil {
+		return "", err
+	}
+	head := fmt.Sprintf("const EXT_ORIGIN = %q;\nconst EXT_TOKEN = %q;\n", "http://"+b.addr, b.token)
+	for _, name := range []string{"background.js", "extract.js"} {
+		p := filepath.Join(dir, name)
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return "", fmt.Errorf("chrome: %s: %w", name, err)
+		}
+		if err := os.WriteFile(p, append([]byte(head), raw...), 0o644); err != nil {
+			return "", fmt.Errorf("chrome: %s: %w", name, err)
+		}
+	}
+	return dir, nil
+}
+
+func (b *Browser) auth(r *http.Request) bool {
+	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return got != "" && got == b.token
+}
+
+func (b *Browser) markExtSeen() {
+	if b.extSeen == nil {
 		return
 	}
-	close(b.hideStop)
-	b.hideStop = nil
+	select {
+	case <-b.extSeen:
+	default:
+		close(b.extSeen)
+		b.log.Info("расширение на связи")
+	}
+}
+
+func (b *Browser) handlePing(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	b.markExtSeen()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func cors(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Private-Network", "true")
+}
+
+func (b *Browser) handleWaitJob(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	if !b.auth(r) {
+		b.log.Warn("расширение пришло с чужим токеном")
+		http.Error(w, "auth", http.StatusUnauthorized)
+		return
+	}
+	b.markExtSeen()
+
+	timer := time.NewTimer(20 * time.Second)
+	defer timer.Stop()
+	for {
+		if j := b.job.Load(); j != nil && j.sent.CompareAndSwap(false, true) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"url":  j.url,
+				"site": j.site,
+				"city": j.city,
+			})
+			b.log.Info("расширение взяло задачу", "site", j.site, "url", j.url)
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-timer.C:
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case <-b.kick:
+		}
+	}
+}
+
+func (b *Browser) handleResult(w http.ResponseWriter, r *http.Request) {
+	cors(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	if !b.auth(r) {
+		http.Error(w, "auth", http.StatusUnauthorized)
+		return
+	}
+	defer r.Body.Close()
+	var msg extResult
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&msg); err != nil {
+		http.Error(w, "json", http.StatusBadRequest)
+		return
+	}
+	j := b.job.Load()
+	if j == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if msg.Href != "" && !sameShopURL(j.url, msg.Href) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	select {
+	case j.bits <- msg.Bits:
+	default:
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func sameShopURL(job, href string) bool {
+	ju, err1 := url.Parse(job)
+	hu, err2 := url.Parse(href)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return shopHostKey(ju.Hostname()) != "" && shopHostKey(ju.Hostname()) == shopHostKey(hu.Hostname())
+}
+
+func shopHostKey(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	switch {
+	case strings.Contains(host, "dns-shop.ru"):
+		return "dns"
+	case strings.Contains(host, "ozon.ru"):
+		return "ozon"
+	case strings.Contains(host, "market.yandex"):
+		return "market"
+	default:
+		return ""
+	}
 }
 
 func (b *Browser) noteChallenge(bits pageBits) {
 	title := strings.TrimSpace(bits.Title)
 	msg := "Нужно пройти капчу в окне Chrome"
+	if ozonInterstitial(bits) {
+		msg = "Нажмите «Обновить страницу» в окне Chrome"
+	}
 	if title != "" {
 		msg += " · " + title
 	}
 	if b.onChallenge != nil {
 		b.onChallenge(msg)
 	}
-	b.log.Warn("показана капча, окно Chrome развёрнуто", "title", title)
+	b.log.Warn("нужно действие в окне Chrome", "title", title)
 }
 
-func hideWebdriver() chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(
-			`Object.defineProperty(navigator, 'webdriver', {get: () => undefined});`,
-		).Do(ctx)
-		return err
-	})
-}
-
-func pageSetup() []chromedp.Action {
-	return []chromedp.Action{
-		network.Enable(),
-		network.SetBlockedURLs([]string{
-			"*.woff", "*.woff2", "*.ttf", "*.mp4", "*.webm",
-		}),
-		hideWebdriver(),
+func (b *Browser) ensureToken() error {
+	if b.token != "" {
+		return nil
 	}
+	tok, err := readOrCreateToken(tokenPath())
+	if err != nil {
+		return err
+	}
+	b.token = tok
+	return nil
 }
 
-func showChromeWindow() chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		_ = page.BringToFront().Do(ctx)
-		id, _, err := browser.GetWindowForTarget().Do(ctx)
-		if err != nil {
-			return nil
-		}
-		return browser.SetWindowBounds(id, &browser.Bounds{
-			Left:        80,
-			Top:         80,
-			Width:       1280,
-			Height:      900,
-			WindowState: browser.WindowStateNormal,
-		}).Do(ctx)
-	})
+func tokenPath() string {
+	return filepath.Join(filepath.Dir(extensionDir()), "ext.token")
 }
 
-func minimizeChromeWindow() chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		id, _, err := browser.GetWindowForTarget().Do(ctx)
-		if err != nil {
-			return nil
+func readOrCreateToken(path string) (string, error) {
+	if raw, err := os.ReadFile(path); err == nil {
+		t := strings.TrimSpace(string(raw))
+		if len(t) >= 16 {
+			return t, nil
 		}
-		return browser.SetWindowBounds(id, &browser.Bounds{
-			WindowState: browser.WindowStateMinimized,
-		}).Do(ctx)
-	})
+	}
+	t, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("chrome: токен: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(t+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("chrome: токен: %w", err)
+	}
+	return t, nil
+}
+
+func randomToken() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("chrome: токен: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+func stampManifest(dir string) error {
+	p := filepath.Join(dir, "manifest.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("chrome: manifest.json: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("chrome: manifest.json: %w", err)
+	}
+	now := time.Now().Unix()
+	m["version"] = fmt.Sprintf("1.%d.%d", now/65536, now%65536)
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("chrome: manifest.json: %w", err)
+	}
+	return os.WriteFile(p, append(out, '\n'), 0o644)
+}
+
+func bustExtensionCache(profile string) {
+	if profile == "" {
+		return
+	}
+	for _, rel := range []string{
+		filepath.Join("Default", "Service Worker"),
+		filepath.Join("Default", "Extension State"),
+	} {
+		_ = os.RemoveAll(filepath.Join(profile, rel))
+	}
 }
 
 func clearStaleProfileLocks(dir string) {
@@ -335,8 +563,6 @@ func clearStaleProfileLocks(dir string) {
 	}
 }
 
-// markChromeExitedCleanly убирает «сессия завершена некорректно»: иначе после
-// Stop-Process Chrome показывает диалог восстановления и вылезает на экран.
 func markChromeExitedCleanly(dir string) {
 	if dir == "" {
 		return
@@ -382,5 +608,31 @@ func isChromeStartError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "chrome failed to start") ||
 		strings.Contains(msg, "chrome: запуск") ||
+		strings.Contains(msg, "расширение не подключилось") ||
+		strings.Contains(msg, "установка расширения") ||
 		strings.Contains(msg, "текущем сеансе")
+}
+
+func copyEmbeddedExt(dir string) error {
+	return fs.WalkDir(extFS, "ext", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(extFS, path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, filepath.Base(path)), b, 0o644)
+	})
+}
+
+func extensionDir() string {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "price-tracking-bot", "chrome-ext")
 }

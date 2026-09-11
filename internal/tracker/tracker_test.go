@@ -175,3 +175,37 @@ func TestCycleAllDoesNotWaitInitialGap(t *testing.T) {
 		t.Fatalf("вызовов %d", dns.calls)
 	}
 }
+
+func TestCycleAllDoesNotWaitBetweenSites(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	if _, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddSubscription(ctx, 42, "ozon", "2190214590", "https://www.ozon.ru/product/2190214590", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	ozon := &fakeDNS{price: 20000}
+	tr := New(store, map[string]Fetcher{"dns": dns, "ozon": ozon}, &fakeNotify{}, Config{
+		Interval:     20 * time.Minute,
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+
+	start := time.Now()
+	tr.cycleAll(ctx)
+	if time.Since(start) > 800*time.Millisecond {
+		t.Fatal("принудительная проверка ждала FETCH_GAP между магазинами")
+	}
+	if dns.calls != 1 || ozon.calls != 1 {
+		t.Fatalf("dns %d ozon %d", dns.calls, ozon.calls)
+	}
+}

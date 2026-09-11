@@ -38,7 +38,8 @@ func TestLiveOzonFetch(t *testing.T) {
 	defer cancel()
 
 	snap, err := o.Fetch(ctx, storage.Product{
-		URL: "https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064",
+		Site: "ozon",
+		URL:  "https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064",
 	})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)

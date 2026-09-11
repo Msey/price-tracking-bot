@@ -34,6 +34,7 @@ func chromeCandidates() []string {
 	}
 	local := os.Getenv("LOCALAPPDATA")
 	return []string{
+		filepath.Join(local, `price-tracking-bot\chrome-for-testing\chrome-win64\chrome.exe`),
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
 		filepath.Join(local, `Google\Chrome\Application\chrome.exe`),

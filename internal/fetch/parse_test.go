@@ -43,10 +43,18 @@ func TestParseHTMLIgnoresInstallment(t *testing.T) {
 }
 
 func TestParseHTMLChallenge(t *testing.T) {
-	html := `<html><script src="/__qrator/qauth_utm_v2d_v9118.js"></script></html>`
+	html := `<html><head><title>HTTP 403</title></head><body>Доступ к сайту www.dns-shop.ru запрещен</body></html>`
 	_, err := parseDNSHTML(html)
 	if !errors.Is(err, ErrChallenge) {
 		t.Fatalf("ожидался ErrChallenge, получено %v", err)
+	}
+}
+
+func TestParseHTMLQratorScriptIsNotBan(t *testing.T) {
+	html := `<html><script src="/__qrator/qauth_utm_v2d_v9118.js"></script><div class="product-card">нет цены</div></html>`
+	_, err := parseDNSHTML(html)
+	if !errors.Is(err, ErrNoPrice) {
+		t.Fatalf("скрипт QRATOR на карточке — не бан, получено %v", err)
 	}
 }
 
@@ -114,6 +122,15 @@ func TestHardBlockedTitle(t *testing.T) {
 	if hardBlocked(pageBits{Title: `Купить 14.6" Ноутбук HONOR`}) {
 		t.Fatal("обычный title не бан")
 	}
+	if hardBlocked(pageBits{Title: "Похоже, нет соединения"}) {
+		t.Fatal("заглушка Ozon — не HTTP 403, её можно пройти кнопкой «Обновить»")
+	}
+	if !needsHuman(pageBits{Title: "Похоже, нет соединения"}) {
+		t.Fatal("заглушка Ozon должна ждать нажатия «Обновить страницу»")
+	}
+	if !ozonInterstitial(pageBits{Blocked: true}) {
+		t.Fatal("blocked — заглушка Ozon")
+	}
 }
 
 func TestNeedsHuman(t *testing.T) {
@@ -129,6 +146,9 @@ func TestNeedsHuman(t *testing.T) {
 	if needsHuman(pageBits{Challenge: true, Title: "HTTP 403"}) {
 		t.Fatal("403 важнее виджета капчи: окно не открываем")
 	}
+	if !needsHuman(pageBits{Title: "Antibot Challenge Page"}) {
+		t.Fatal("заголовок Antibot Challenge — заглушка Ozon, ждём кнопку")
+	}
 	if needsHuman(pageBits{Title: "Товар"}) {
 		t.Fatal("обычная страница без цены — не капча")
 	}
@@ -138,6 +158,10 @@ func TestParseBitsHardBlocked(t *testing.T) {
 	_, err := parseBits(pageBits{Title: "HTTP 403"})
 	if !errors.Is(err, ErrChallenge) {
 		t.Fatalf("403 должен быть ErrChallenge, получено %v", err)
+	}
+	_, err = parseVisiblePriceBits(pageBits{Title: "Antibot Challenge Page"})
+	if !errors.Is(err, ErrChallenge) {
+		t.Fatalf("заглушка Ozon должна быть ErrChallenge, получено %v", err)
 	}
 }
 

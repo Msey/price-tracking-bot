@@ -214,31 +214,31 @@ func (t *Tracker) siteNames() []string {
 
 // cycle — обычный заход: берутся только товары, которым пора.
 func (t *Tracker) cycle(ctx context.Context) {
-	t.cycleWith(ctx, func(ctx context.Context, site string) ([]storage.Product, error) {
+	t.cycleWith(ctx, false, func(ctx context.Context, site string) ([]storage.Product, error) {
 		return t.store.ProductsDue(ctx, site, time.Now().Add(-t.cfg.Interval), t.cfg.PerCycle)
 	})
 }
 
 // cycleAll — заход по кнопке: все товары с активной подпиской, без оглядки
-// на то, когда их проверяли. lastHit сбрасывается, чтобы первый товар пошёл
-// сразу, а не после FETCH_GAP.
+// на то, когда их проверяли. Паузу FETCH_GAP не держим: человек нажал
+// «Проверить цены» и не должен минуту смотреть на «Проверка…».
 func (t *Tracker) cycleAll(ctx context.Context) {
 	t.lastHit = time.Time{}
-	t.cycleWith(ctx, func(ctx context.Context, site string) ([]storage.Product, error) {
+	t.cycleWith(ctx, true, func(ctx context.Context, site string) ([]storage.Product, error) {
 		return t.store.ActiveProducts(ctx, site)
 	})
 }
 
-func (t *Tracker) cycleWith(ctx context.Context, list func(context.Context, string) ([]storage.Product, error)) {
+func (t *Tracker) cycleWith(ctx context.Context, skipGap bool, list func(context.Context, string) ([]storage.Product, error)) {
 	for _, site := range t.siteNames() {
 		if ctx.Err() != nil {
 			return
 		}
-		t.cycleSite(ctx, site, list)
+		t.cycleSite(ctx, site, skipGap, list)
 	}
 }
 
-func (t *Tracker) cycleSite(ctx context.Context, site string, list func(context.Context, string) ([]storage.Product, error)) {
+func (t *Tracker) cycleSite(ctx context.Context, site string, skipGap bool, list func(context.Context, string) ([]storage.Product, error)) {
 	f := t.fetchers[site]
 	if f == nil {
 		return
@@ -258,10 +258,10 @@ func (t *Tracker) cycleSite(ctx context.Context, site string, list func(context.
 		t.log.Error("список товаров к проверке", "site", site, "error", err)
 		return
 	}
-	t.fetchList(ctx, site, due)
+	t.fetchList(ctx, site, skipGap, due)
 }
 
-func (t *Tracker) fetchList(ctx context.Context, site string, due []storage.Product) {
+func (t *Tracker) fetchList(ctx context.Context, site string, skipGap bool, due []storage.Product) {
 	if len(due) == 0 {
 		t.log.Info("нечего проверять", "site", site)
 		t.setStatus("Нечего проверять на %s", site)
@@ -273,7 +273,7 @@ func (t *Tracker) fetchList(ctx context.Context, site string, due []storage.Prod
 		if ctx.Err() != nil {
 			return
 		}
-		if i > 0 || !t.lastHit.IsZero() {
+		if !skipGap && (i > 0 || !t.lastHit.IsZero()) {
 			wait := t.cfg.FetchGap - time.Since(t.lastHit)
 			if wait > 0 {
 				t.setStatus("Пауза %s до следующего товара · дальше %s", wait.Round(time.Second), p.Title())

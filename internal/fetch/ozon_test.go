@@ -55,6 +55,26 @@ func TestParseOzonHTMLChallenge(t *testing.T) {
 	}
 }
 
+func TestParseOzonHTMLPerimeterxIsNotChallenge(t *testing.T) {
+	// Скрипт PerimeterX есть на обычной карточке. Это не виджет капчи.
+	html := `<html><h1>Товар</h1><script src="https://client.perimeterx.net/px.js"></script></html>`
+	_, err := parseOzonHTML(html)
+	if !errors.Is(err, ErrNoPrice) {
+		t.Fatalf("ожидался ErrNoPrice без виджета капчи, получено %v", err)
+	}
+}
+
+func TestParseOzonHTMLOfflineInterstitial(t *testing.T) {
+	html := `<title>Похоже, нет соединения</title><div id="px-captcha"></div><p>Выключите VPN</p><span>Инцидент: fab_chig_1</span>`
+	_, err := parseOzonHTML(html)
+	if !errors.Is(err, ErrChallenge) {
+		t.Fatalf("заглушка должна быть ErrChallenge, получено %v", err)
+	}
+	if !needsHuman(pageBits{Challenge: true, Title: "Похоже, нет соединения"}) {
+		t.Fatal("заглушка должна ждать нажатия «Обновить страницу»")
+	}
+}
+
 func TestParseOzonHTMLNoPrice(t *testing.T) {
 	_, err := parseOzonHTML(`<html><h1>Товар</h1></html>`)
 	if !errors.Is(err, ErrNoPrice) {

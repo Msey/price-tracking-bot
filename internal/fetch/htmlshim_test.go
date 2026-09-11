@@ -17,6 +17,7 @@ var (
 	marketPriceInnerRe = regexp.MustCompile(`(?is)data-auto=["']snippet-price-current["'][^>]*>\s*<span[^>]*>\s*([^<]+?)\s*<`)
 	ozonHeadlineRe     = regexp.MustCompile(`(?is)class=["'][^"']*\btsHeadline600Large\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
 	h1Re               = regexp.MustCompile(`(?is)<h1\b[^>]*>(.*?)</h1>`)
+	titleRe            = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
 	tagRe              = regexp.MustCompile(`(?s)<[^>]+>`)
 )
 
@@ -38,18 +39,25 @@ func parseMarketHTML(html string) (Snapshot, error) {
 }
 
 func parseOzonHTML(html string) (Snapshot, error) {
+	blocked := ozonInterstitialHTML(html)
 	return parseVisiblePriceBits(pageBits{
-		Challenge: ozonChallengeHTML(html),
+		Challenge: ozonChallengeHTML(html) && !blocked,
+		Blocked:   blocked,
 		LDJSON:    extractLDJSON(html),
 		CSSPrice:  extractOzonPriceText(html),
 		Name:      extractH1(html),
+		Title:     extractTitle(html),
 	})
 }
 
 func dnsChallengeHTML(html string) bool {
-	return strings.Contains(html, "/__qrator/") ||
-		strings.Contains(html, "qauth_handle_validate") ||
-		strings.Contains(html, "qrator_jsr")
+	t := strings.ToLower(extractTitle(html))
+	h := strings.ToLower(html)
+	if strings.Contains(t, "403") || strings.Contains(t, "401") || strings.Contains(t, "forbidden") {
+		return true
+	}
+	return strings.Contains(html, "Доступ к сайту") ||
+		strings.Contains(h, "доступ запрещен")
 }
 
 func marketChallengeHTML(html string) bool {
@@ -62,11 +70,14 @@ func marketChallengeHTML(html string) bool {
 }
 
 func ozonChallengeHTML(html string) bool {
+	return strings.Contains(strings.ToLower(html), "px-captcha")
+}
+
+func ozonInterstitialHTML(html string) bool {
 	h := strings.ToLower(html)
-	return strings.Contains(h, "px-captcha") ||
-		strings.Contains(h, "perimeterx") ||
+	return strings.Contains(h, "нет соединения") ||
 		strings.Contains(h, "antibot challenge") ||
-		strings.Contains(h, "access denied")
+		strings.Contains(h, "fab_chig")
 }
 
 func extractLDJSON(html string) []string {
@@ -140,6 +151,14 @@ func priceWindow(s string) string {
 
 func extractH1(html string) string {
 	m := h1Re.FindStringSubmatch(html)
+	if m == nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(tagRe.ReplaceAllString(m[1], " ")), " ")
+}
+
+func extractTitle(html string) string {
+	m := titleRe.FindStringSubmatch(html)
 	if m == nil {
 		return ""
 	}

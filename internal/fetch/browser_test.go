@@ -8,11 +8,11 @@ import (
 )
 
 func TestNewBrowserUsesAbsoluteProfile(t *testing.T) {
-	b := NewBrowser(BrowserOptions{ProfileDir: "data/chrome-profile"})
+	b := NewBrowser(BrowserOptions{ProfileDir: "data/chrome-plain"})
 	if !filepath.IsAbs(b.profileDir) {
 		t.Fatalf("профиль должен быть абсолютным, получено %q", b.profileDir)
 	}
-	if !strings.Contains(filepath.ToSlash(b.profileDir), "data/chrome-profile") {
+	if !strings.Contains(filepath.ToSlash(b.profileDir), "data/chrome-plain") {
 		t.Fatalf("профиль %q", b.profileDir)
 	}
 }
@@ -60,7 +60,80 @@ func TestMarkChromeExitedCleanly(t *testing.T) {
 	}
 }
 
-func TestHideChromeWindowsDoesNotPanic(t *testing.T) {
-	hideChromeWindows()
-	showChromeWindows()
+func TestSameShopURL(t *testing.T) {
+	ozon := "https://www.ozon.ru/product/germetik-2422341064"
+	if !sameShopURL(ozon, "https://www.ozon.ru/product/germetik-2422341064/?_bctx=1") {
+		t.Fatal("ozon с query")
+	}
+	if !sameShopURL(ozon, "https://ozon.ru/product/other-123") {
+		t.Fatal("другой товар ozon в той же вкладке")
+	}
+	market := "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913"
+	if !sameShopURL(market, "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913?nid=1") {
+		t.Fatal("market с query")
+	}
+	if sameShopURL(ozon, "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/") {
+		t.Fatal("чужой магазин")
+	}
+	if sameShopURL(ozon, "about:blank") {
+		t.Fatal("about:blank")
+	}
+}
+
+func TestManifestAllowsLocalhostAnyPort(t *testing.T) {
+	raw, err := extFS.ReadFile("ext/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"http://127.0.0.1:*/*"`) {
+		t.Fatalf("нужен порт * для локального HTTP, иначе Chrome не пустит :18732: %s", s)
+	}
+	if strings.Contains(s, `"http://127.0.0.1/*"`) {
+		t.Fatal("http://127.0.0.1/* совпадает только с портом 80")
+	}
+}
+
+func TestReadOrCreateTokenPersists(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ext.token")
+	a, err := readOrCreateToken(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) < 16 {
+		t.Fatalf("короткий токен %q", a)
+	}
+	b, err := readOrCreateToken(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf("токен не сохранился: %q vs %q", a, b)
+	}
+}
+
+func TestStampManifestBumpsVersion(t *testing.T) {
+	dir := t.TempDir()
+	src, err := extFS.ReadFile("ext/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(p, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := stampManifest(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `"version": "1.0.0"`) {
+		t.Fatalf("версия не сменилась: %s", got)
+	}
+	if !strings.Contains(string(got), `"http://127.0.0.1:*/*"`) {
+		t.Fatal("потеряли host_permissions")
+	}
 }

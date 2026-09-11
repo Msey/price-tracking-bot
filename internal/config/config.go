@@ -103,7 +103,7 @@ func Load() (Config, error) {
 	}
 	cfg.CircuitCooldown = cooldown
 
-	cfg.ChromeProfile = envOr("CHROME_PROFILE", "data/chrome-profile")
+	cfg.ChromeProfile = envOr("CHROME_PROFILE", "data/chrome-plain")
 	cfg.ChromePath = os.Getenv("CHROME_PATH")
 	cfg.ChromeHeadless = envOr("CHROME_HEADLESS", "0") == "1"
 	cfg.UIAddr = strings.TrimSpace(envOr("UI_ADDR", "127.0.0.1:8080"))

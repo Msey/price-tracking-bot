@@ -31,6 +31,7 @@ type Snapshot struct {
 type pageBits struct {
 	QRATOR    bool     `json:"qrator"`
 	Challenge bool     `json:"challenge"`
+	Blocked   bool     `json:"blocked"`
 	LDJSON    []string `json:"ldjson"`
 	CSSPrice  string   `json:"cssPrice"`
 	Name      string   `json:"name"`
@@ -81,11 +82,26 @@ func hardBlocked(p pageBits) bool {
 	return strings.Contains(t, "403") || strings.Contains(t, "401")
 }
 
-// needsHuman — на странице есть интерактивная капча, которую человек может
-// пройти в окне Chrome. QRATOR в HTML и HTTP 403 сюда не входят: скрипт
-// защиты есть на каждой карточке DNS, а бан по IP кнопкой не снимается.
+// ozonInterstitial — заглушка «Похоже, нет соединения». Это антибот, а не
+// обрыв сети: в обычном Chrome та же ссылка открывается. На странице кнопка
+// «Обновить страницу» — её нужно нажать и подождать карточку.
+func ozonInterstitial(p pageBits) bool {
+	if p.Blocked {
+		return true
+	}
+	t := strings.ToLower(strings.TrimSpace(p.Title))
+	return strings.Contains(t, "antibot challenge") ||
+		strings.Contains(t, "нет соединения")
+}
+
+// needsHuman — на странице есть действие, которое может сделать человек:
+// капча Ozon/Маркета или кнопка «Обновить страницу» у заглушки Ozon.
+// HTTP 403 сюда не входит: бан по IP кнопкой не снимается.
 func needsHuman(p pageBits) bool {
-	return p.Challenge && !hardBlocked(p)
+	if hardBlocked(p) {
+		return false
+	}
+	return p.Challenge || ozonInterstitial(p)
 }
 
 type ldNode struct {
@@ -261,7 +277,7 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 		}
 		return snap, nil
 	}
-	if botWall(p) {
+	if botWall(p) || ozonInterstitial(p) {
 		return Snapshot{}, ErrChallenge
 	}
 	return Snapshot{}, ErrNoPrice

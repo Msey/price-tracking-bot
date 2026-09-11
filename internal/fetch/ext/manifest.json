@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Price tracking helper",
+  "version": "1.0.0",
+  "permissions": ["tabs", "cookies"],
+  "host_permissions": [
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*",
+    "*://*.ozon.ru/*",
+    "*://ozon.ru/*",
+    "*://*.dns-shop.ru/*",
+    "*://*.market.yandex.ru/*",
+    "*://market.yandex.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.ozon.ru/*",
+        "*://ozon.ru/*",
+        "*://*.dns-shop.ru/*",
+        "*://*.market.yandex.ru/*",
+        "*://market.yandex.ru/*"
+      ],
+      "js": ["extract.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

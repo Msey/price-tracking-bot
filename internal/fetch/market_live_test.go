@@ -33,7 +33,8 @@ func TestLiveMarketFetch(t *testing.T) {
 	defer cancel()
 
 	snap, err := m.Fetch(ctx, storage.Product{
-		URL: "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913",
+		Site: "market",
+		URL:  "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913",
 	})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
