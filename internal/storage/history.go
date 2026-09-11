@@ -55,6 +55,35 @@ func (s *Store) ProductsDue(ctx context.Context, site string, olderThan time.Tim
 	return out, nil
 }
 
+// ActiveProducts — все товары сайта с хотя бы одной активной подпиской,
+// независимо от того, когда их проверяли в последний раз.
+func (s *Store) ActiveProducts(ctx context.Context, site string) ([]Product, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
+		FROM products p
+		JOIN subscriptions s ON s.product_id = p.id AND s.active = 1
+		WHERE p.site = ?
+		GROUP BY p.id
+		ORDER BY p.id`, site)
+	if err != nil {
+		return nil, fmt.Errorf("storage: активные товары (%s): %w", site, err)
+	}
+	defer rows.Close()
+
+	var out []Product
+	for rows.Next() {
+		var p Product
+		if err := rows.Scan(&p.ID, &p.Site, &p.ExternalKey, &p.URL, &p.Name, &p.City); err != nil {
+			return nil, fmt.Errorf("storage: чтение активного товара: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: обход активных товаров: %w", err)
+	}
+	return out, nil
+}
+
 // RecordSnapshot пишет замер и при необходимости обновляет имя товара.
 func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string, kopecks int64, currency string, available bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)

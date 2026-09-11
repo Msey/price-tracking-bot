@@ -298,6 +298,14 @@ func TestProductsDueSkipsFreshSnapshots(t *testing.T) {
 	if len(due) != 1 || due[0].ID != stale.ID {
 		t.Fatalf("due = %+v, ожидался только старый товар", due)
 	}
+
+	all, err := s.ActiveProducts(ctx, "dns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("активных %d, ожидалось 2 (и свежий тоже)", len(all))
+	}
 }
 
 func TestRecordSnapshotUpdatesName(t *testing.T) {

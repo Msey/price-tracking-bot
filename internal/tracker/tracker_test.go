@@ -78,3 +78,64 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 		t.Fatalf("вызовов fetch %d", dns.calls)
 	}
 }
+
+func TestWaitInterruptedByRequestCheck(t *testing.T) {
+	tr := New(nil, nil, nil, Config{
+		Interval:     20 * time.Minute,
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+
+	ctx := context.Background()
+	start := time.Now()
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		tr.RequestCheck()
+	}()
+	if !tr.wait(ctx, 2*time.Second) {
+		t.Fatal("wait вернул false")
+	}
+	if time.Since(start) > 800*time.Millisecond {
+		t.Fatal("ожидание автоцикла не сбросилось")
+	}
+	if !tr.Busy() && !tr.consumeKick() {
+		t.Fatal("после сброса должна остаться принудительная проверка")
+	}
+}
+
+func TestCycleAllChecksFreshProducts(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSnapshot(ctx, p.ID, "Товар", 10000, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	tr := New(store, map[string]Fetcher{"dns": dns}, &fakeNotify{}, Config{
+		Interval:     20 * time.Minute,
+		FetchGap:     30 * time.Second,
+		PerCycle:     8,
+		StartupDelay: time.Minute,
+	}, nil)
+	tr.cfg.FetchGap = 0
+
+	tr.cycle(ctx)
+	if dns.calls != 0 {
+		t.Fatalf("обычный цикл не должен трогать свежий товар, вызовов %d", dns.calls)
+	}
+
+	tr.cycleAll(ctx)
+	if dns.calls != 1 {
+		t.Fatalf("полная проверка должна сходить за свежим товаром, вызовов %d", dns.calls)
+	}
+}

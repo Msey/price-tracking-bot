@@ -115,6 +115,8 @@ func run(log *slog.Logger) error {
 			Log:         log,
 			StartHidden: startHiddenFromArgs(os.Args[1:]),
 			BotUsername: bot.Username(),
+			CheckNow:    tr.RequestCheck,
+			CheckBusy:   tr.Busy,
 		})
 		stop()
 		log.Info("бот остановлен")

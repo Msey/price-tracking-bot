@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/fetch"
@@ -39,6 +40,9 @@ type Tracker struct {
 	cfg      Config
 	log      *slog.Logger
 	lastHit  time.Time
+	kick     chan struct{}
+	pending  atomic.Bool
+	busy     atomic.Bool
 }
 
 func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
@@ -60,7 +64,30 @@ func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg
 	if fetchers == nil {
 		fetchers = map[string]Fetcher{}
 	}
-	return &Tracker{store: store, fetchers: fetchers, notify: notify, cfg: cfg, log: log}
+	return &Tracker{
+		store:    store,
+		fetchers: fetchers,
+		notify:   notify,
+		cfg:      cfg,
+		log:      log,
+		kick:     make(chan struct{}, 1),
+	}
+}
+
+// RequestCheck сбрасывает ожидание автоцикла и ставит полную проверку всех товаров.
+func (t *Tracker) RequestCheck() {
+	t.pending.Store(true)
+	select {
+	case t.kick <- struct{}{}:
+		t.log.Info("запрошена принудительная проверка")
+	default:
+		t.log.Info("принудительная проверка уже стоит в очереди")
+	}
+}
+
+// Busy — идёт проверка или она уже запрошена и вот-вот начнётся.
+func (t *Tracker) Busy() bool {
+	return t.busy.Load() || t.pending.Load()
 }
 
 // Run крутит циклы, пока жив контекст. Первый заход не сразу: после рестарта
@@ -73,15 +100,55 @@ func (t *Tracker) Run(ctx context.Context) {
 		"startup_delay", t.cfg.StartupDelay,
 		"sites", t.siteNames())
 
-	if !sleepCtx(ctx, t.cfg.StartupDelay) {
+	if !t.wait(ctx, t.cfg.StartupDelay) {
 		return
 	}
-	t.cycle(ctx)
-	for {
-		if !sleepCtx(ctx, t.cfg.Interval) {
+	for ctx.Err() == nil {
+		force := t.consumeKick()
+		t.busy.Store(true)
+		t.pending.Store(false)
+		if force {
+			t.log.Info("принудительная проверка всех товаров")
+			t.cycleAll(ctx)
+		} else {
+			t.cycle(ctx)
+		}
+		t.busy.Store(false)
+		if !t.wait(ctx, t.cfg.Interval) {
 			return
 		}
-		t.cycle(ctx)
+	}
+}
+
+func (t *Tracker) consumeKick() bool {
+	select {
+	case <-t.kick:
+		for {
+			select {
+			case <-t.kick:
+			default:
+				return true
+			}
+		}
+	default:
+		return false
+	}
+}
+
+func (t *Tracker) wait(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.kick:
+		t.RequestCheck()
+		return true
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -122,6 +189,41 @@ func (t *Tracker) cycleSite(ctx context.Context, site string) {
 		t.log.Error("список товаров к проверке", "site", site, "error", err)
 		return
 	}
+	t.fetchList(ctx, site, due)
+}
+
+func (t *Tracker) cycleAll(ctx context.Context) {
+	for _, site := range t.siteNames() {
+		if ctx.Err() != nil {
+			return
+		}
+		t.cycleSiteAll(ctx, site)
+	}
+}
+
+func (t *Tracker) cycleSiteAll(ctx context.Context, site string) {
+	f := t.fetchers[site]
+	if f == nil {
+		return
+	}
+	if paused, ok := f.(interface {
+		Paused() (time.Time, string, bool)
+	}); ok {
+		if until, reason, on := paused.Paused(); on {
+			t.log.Warn("цикл пропущен, предохранитель", "site", site, "until", until, "reason", reason)
+			return
+		}
+	}
+
+	due, err := t.store.ActiveProducts(ctx, site)
+	if err != nil {
+		t.log.Error("список товаров к полной проверке", "site", site, "error", err)
+		return
+	}
+	t.fetchList(ctx, site, due)
+}
+
+func (t *Tracker) fetchList(ctx context.Context, site string, due []storage.Product) {
 	if len(due) == 0 {
 		t.log.Info("нечего проверять", "site", site)
 		return

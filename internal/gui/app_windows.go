@@ -84,6 +84,9 @@ type app struct {
 	items     []Item
 	allowQuit bool
 	loaded    bool
+	checkNow  func()
+	checkBusy func() bool
+	checkBtn  *walk.PushButton
 }
 
 func Run(ctx context.Context, opt Options) error {
@@ -141,9 +144,11 @@ func Run(ctx context.Context, opt Options) error {
 	}
 
 	a := &app{
-		store:    opt.Store,
-		dataPath: opt.DataPath,
-		log:      opt.Log,
+		store:     opt.Store,
+		dataPath:  opt.DataPath,
+		log:       opt.Log,
+		checkNow:  opt.CheckNow,
+		checkBusy: opt.CheckBusy,
 		board: &board{
 			titleFont: titleFont,
 			metaFont:  metaFont,
@@ -199,6 +204,7 @@ func Run(ctx context.Context, opt Options) error {
 						},
 					},
 					ui.HSpacer{},
+					ui.PushButton{AssignTo: &a.checkBtn, Text: "Проверить цены", MinSize: ui.Size{Width: 150, Height: 32}, OnClicked: a.requestCheck},
 					ui.PushButton{Text: "Обновить", MinSize: ui.Size{Width: 110, Height: 32}, OnClicked: func() { a.refresh(false) }},
 					ui.PushButton{Text: "Папка с данными", MinSize: ui.Size{Width: 140, Height: 32}, OnClicked: a.openDataFolder},
 				},
@@ -216,6 +222,7 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	a.board.attach(canvas)
+	a.updateCheckUI()
 	win.SetMenu(a.mw.Handle(), 0)
 	if tb := a.mw.ToolBar(); tb != nil {
 		tb.SetVisible(false)
@@ -253,6 +260,11 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	if link := telegramBotURL(opt.BotUsername); link != "" {
 		if err := addTrayAction(ni, "Открыть в Telegram", func() { openURL(link) }); err != nil {
+			return err
+		}
+	}
+	if a.checkNow != nil {
+		if err := addTrayAction(ni, "Проверить цены", a.requestCheck); err != nil {
 			return err
 		}
 	}
@@ -295,6 +307,59 @@ func addTrayAction(ni *walk.NotifyIcon, title string, fn func()) error {
 	}
 	act.Triggered().Attach(fn)
 	return ni.ContextMenu().Actions().Add(act)
+}
+
+func (a *app) requestCheck() {
+	if a.checkNow == nil {
+		return
+	}
+	a.checkNow()
+	a.updateCheckUI()
+	if a.status != nil {
+		_ = a.status.SetText("Запущена проверка всех цен. Таймер автоцикла сброшен.")
+	}
+	go a.watchCheck()
+}
+
+func (a *app) watchCheck() {
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.Now().Add(2 * time.Hour)
+	for {
+		if a.mw == nil || time.Now().After(deadline) {
+			return
+		}
+		busy := a.checkRunning()
+		a.mw.Synchronize(func() {
+			a.updateCheckUI()
+			a.refresh(true)
+		})
+		if !busy {
+			return
+		}
+		<-ticker.C
+	}
+}
+
+func (a *app) checkRunning() bool {
+	return a.checkBusy != nil && a.checkBusy()
+}
+
+func (a *app) updateCheckUI() {
+	if a.checkBtn == nil {
+		return
+	}
+	if a.checkNow == nil {
+		a.checkBtn.SetEnabled(false)
+		return
+	}
+	busy := a.checkRunning()
+	a.checkBtn.SetEnabled(!busy)
+	if busy {
+		_ = a.checkBtn.SetText("Проверка…")
+	} else {
+		_ = a.checkBtn.SetText("Проверить цены")
+	}
 }
 
 func (a *app) hideToTray() {
@@ -351,7 +416,10 @@ func (a *app) poll(ctx context.Context) {
 			return
 		case <-timer.C:
 			if a.mw != nil {
-				a.mw.Synchronize(func() { a.refresh(true) })
+				a.mw.Synchronize(func() {
+					a.updateCheckUI()
+					a.refresh(true)
+				})
 			}
 			d := 10 * time.Second
 			if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
@@ -391,9 +459,15 @@ func (a *app) refresh(notify bool) {
 	a.loaded = true
 	if a.status != nil {
 		n := len(items)
-		_ = a.status.SetText("Работает в фоне · " +
-			fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
-			" в списке · закрытие окна прячет в трей")
+		if a.checkRunning() {
+			_ = a.status.SetText("Идёт проверка цен · " +
+				fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
+				" · автоцикл начнётся заново после неё")
+		} else {
+			_ = a.status.SetText("Работает в фоне · " +
+				fmt.Sprintf("%d %s", n, ruPlural(n, "товар", "товара", "товаров")) +
+				" в списке · закрытие окна прячет в трей")
+		}
 	}
 	if a.ni != nil {
 		_ = a.ni.SetToolTip("Трекинг цен · " + ruPlural(len(items), "товар", "товара", "товаров"))

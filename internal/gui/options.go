@@ -14,4 +14,8 @@ type Options struct {
 	StartHidden bool
 	// BotUsername — @имя бота без собаки, для ссылки t.me в меню трея.
 	BotUsername string
+	// CheckNow сбрасывает таймер автопроверки и проверяет все товары.
+	CheckNow func()
+	// CheckBusy сообщает, что проверка уже идёт или только что запрошена.
+	CheckBusy func() bool
 }
