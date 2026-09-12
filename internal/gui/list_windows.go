@@ -130,7 +130,9 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 	accentW, priceW, rowH := m.accentW, m.priceW, m.rowH
 	dpi := m.dpi
 
-	text := walk.RGB(243, 234, 220)
+	// Заголовок теплее белого, но светлее золота цены и мета-строки,
+	// иначе имя сливается с остальным текстом.
+	title := walk.RGB(236, 214, 176)
 	muted := walk.RGB(154, 141, 122)
 	gold := walk.RGB(226, 182, 87)
 
@@ -176,7 +178,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 		priceBox := walk.Rectangle{X: row.X + row.Width - pad - priceW, Y: row.Y + pad, Width: priceW, Height: titleH}
 		metaBox := walk.Rectangle{X: textX, Y: row.Y + pad + titleH, Width: row.X + row.Width - textX - pad, Height: metaH}
 
-		_ = canvas.DrawTextPixels(item.Title, b.titleFont, text, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
+		_ = canvas.DrawTextPixels(item.Title, b.titleFont, title, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
 		_ = canvas.DrawTextPixels(item.Price, b.priceFont, gold, priceBox, walk.TextRight|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
 
 		meta := item.Site + " · " + item.City + " · " + item.Status
@@ -203,6 +205,12 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			for _, p := range pts {
 				b.wpts = append(b.wpts, walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y})
 			}
+			if len(pts) == 1 && b.goldPen != nil {
+				left, right := singlePriceSpan(chart.Width, pts[0])
+				_ = canvas.DrawLinePixels(b.goldPen,
+					walk.Point{X: chart.X + left.X, Y: chart.Y + left.Y},
+					walk.Point{X: chart.X + right.X, Y: chart.Y + right.Y})
+			}
 			for j := 1; j < len(b.wpts) && j < len(item.Points); j++ {
 				if pen := b.sparkPen(item.Points[j-1], item.Points[j]); pen != nil {
 					_ = canvas.DrawLinePixels(pen, b.wpts[j-1], b.wpts[j])
@@ -226,11 +234,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 				if j > 0 && j < len(item.Points) {
 					brush = b.sparkNode(item.Points[j-1], item.Points[j])
 				}
-				if brush != nil {
-					_ = canvas.FillEllipsePixels(brush, walk.Rectangle{
-						X: p.X - r, Y: p.Y - r, Width: r*2 + 1, Height: r*2 + 1,
-					})
-				}
+				fillChartNode(canvas, brush, p.X, p.Y, r)
 				if j >= len(item.Samples) || !firstPriceLabel(item.Points, j) {
 					continue
 				}
@@ -296,6 +300,21 @@ func (m boardMetrics) trashRect(row walk.Rectangle) walk.Rectangle {
 
 func rectContains(r walk.Rectangle, x, y int) bool {
 	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
+}
+
+func fillChartNode(canvas *walk.Canvas, brush *walk.SolidColorBrush, cx, cy, r int) {
+	if canvas == nil || brush == nil || r < 1 {
+		return
+	}
+	for dy := -r; dy <= r; dy++ {
+		half := nodeHalfWidth(r, dy)
+		if half < 1 && r > 0 {
+			continue
+		}
+		_ = canvas.FillRectanglePixels(brush, walk.Rectangle{
+			X: cx - half, Y: cy + dy, Width: half*2 + 1, Height: 1,
+		})
+	}
 }
 
 func (b *board) sparkPen(from, to int64) walk.Pen {

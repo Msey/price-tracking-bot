@@ -183,11 +183,11 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(mutedFill)
-	goldLine, err := walk.NewCosmeticPen(walk.PenSolid, walk.RGB(226, 182, 87))
+	frame, err := walk.NewSolidColorBrush(walk.RGB(58, 50, 40))
 	if err != nil {
 		return err
 	}
-	keep(goldLine)
+	keep(frame)
 	goldBrush, err := walk.NewSolidColorBrush(walk.RGB(226, 182, 87))
 	if err != nil {
 		return err
@@ -296,8 +296,7 @@ func Run(ctx context.Context, opt Options) error {
 		goldHot:   goldHot,
 		goldPress: goldPress,
 		mutedFill: mutedFill,
-		line:      gridPen,
-		goldLine:  goldLine,
+		frame:     frame,
 	}
 	a.checkBtn = newThemeButton("Проверить цены", true, chrome, a.requestCheck)
 	a.logBtn = newThemeButton("Логи: выкл", false, chrome, a.toggleDiagLog)

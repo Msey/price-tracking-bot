@@ -109,6 +109,30 @@ func TestSparkline(t *testing.T) {
 	}
 }
 
+func TestNodeHalfWidth(t *testing.T) {
+	// r=2: без однопиксельной «антенны» сверху и снизу.
+	if nodeHalfWidth(2, -2) != 1 || nodeHalfWidth(2, 0) != 2 || nodeHalfWidth(2, 2) != 1 {
+		t.Fatalf("r=2: %d %d %d", nodeHalfWidth(2, -2), nodeHalfWidth(2, 0), nodeHalfWidth(2, 2))
+	}
+	if nodeHalfWidth(1, -1) != 1 || nodeHalfWidth(1, 0) != 1 {
+		t.Fatal("r=1 остаётся крестом 3×3")
+	}
+	if nodeHalfWidth(0, 0) != 0 || nodeHalfWidth(2, 3) != 0 {
+		t.Fatal("вне радиуса")
+	}
+}
+
+func TestSinglePriceSpan(t *testing.T) {
+	left, right := singlePriceSpan(200, point{X: 100, Y: 12})
+	if left != (point{X: 0, Y: 12}) || right != (point{X: 200, Y: 12}) {
+		t.Fatalf("линия %v — %v", left, right)
+	}
+	left, right = singlePriceSpan(0, point{X: 5, Y: 3})
+	if left != (point{X: 5, Y: 3}) || right != (point{X: 5, Y: 3}) {
+		t.Fatal("нулевая ширина не должна сдвигать точку")
+	}
+}
+
 func TestSparklineIntoReusesBuffer(t *testing.T) {
 	buf := make([]point, 0, 8)
 	got := sparklineInto(buf, 90, 40, []int64{100, 200, 150})

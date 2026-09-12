@@ -30,6 +30,20 @@ func TestButtonFaceOf(t *testing.T) {
 	}
 }
 
+func TestButtonStripeStaysInsideFrame(t *testing.T) {
+	x, y, w, h := buttonStripe(120, 36, 3)
+	if x != 1 || y != 1 || w != 3 || h != 34 {
+		t.Fatalf("полоска %+v", []int{x, y, w, h})
+	}
+	if x+w >= 120 || y+h >= 36 {
+		t.Fatal("полоска не должна занимать пиксели рамки")
+	}
+	x, y, w, h = buttonStripe(2, 36, 3)
+	if w != 0 || h != 0 {
+		t.Fatal("слишком узкая кнопка")
+	}
+}
+
 func TestButtonTextColor(t *testing.T) {
 	if buttonTextColor(facePrimary) != walk.RGB(22, 20, 16) {
 		t.Fatal("главная кнопка — тёмный текст на золоте")

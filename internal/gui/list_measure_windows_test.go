@@ -8,6 +8,15 @@ import (
 	"github.com/lxn/walk"
 )
 
+func TestGrowTip(t *testing.T) {
+	if growTip(80) != 100 || growTip(32) != 40 {
+		t.Fatalf("1.25x: %d %d", growTip(80), growTip(32))
+	}
+	if growTip(0) != 0 || growTip(-1) != -1 {
+		t.Fatal("нулевой и отрицательный размер не трогаем")
+	}
+}
+
 func TestTipRectStaysInView(t *testing.T) {
 	view := walk.Rectangle{X: 0, Y: 0, Width: 200, Height: 100}
 	r := tipRect(20, 10, view, 80, 30, 5)

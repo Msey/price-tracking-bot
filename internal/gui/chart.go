@@ -54,6 +54,35 @@ func sparklineInto(dst []point, width, height int, prices []int64) []point {
 	return dst
 }
 
+// singlePriceSpan — горизонталь через единственный узел, на всю ширину
+// графика. Второго замера нет, ломаную не из чего собрать, но линия
+// всё равно показывает уровень цены.
+func singlePriceSpan(width int, pt point) (left, right point) {
+	if width < 1 {
+		return pt, pt
+	}
+	return point{X: 0, Y: pt.Y}, point{X: width, Y: pt.Y}
+}
+
+// nodeHalfWidth — полуширина ряда узла. У маленького GDI-эллипса сверху
+// торчит один пиксель; крайние ряды делаем шире, чтобы силуэт был ровный.
+func nodeHalfWidth(r, dy int) int {
+	if r < 1 {
+		return 0
+	}
+	ad := dy
+	if ad < 0 {
+		ad = -ad
+	}
+	if ad > r {
+		return 0
+	}
+	if ad == r && r > 1 {
+		return r - 1
+	}
+	return r
+}
+
 // nodeX — центр i-й доли контрола шириной width при n узлах.
 func nodeX(width, n, i int) int {
 	if n < 1 || width < 1 {

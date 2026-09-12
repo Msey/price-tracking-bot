@@ -73,8 +73,7 @@ type buttonChrome struct {
 	goldHot   *walk.SolidColorBrush
 	goldPress *walk.SolidColorBrush
 	mutedFill *walk.SolidColorBrush
-	line      walk.Pen
-	goldLine  walk.Pen
+	frame     *walk.SolidColorBrush
 }
 
 func (c *buttonChrome) brush(face buttonFace) *walk.SolidColorBrush {
@@ -97,7 +96,7 @@ func (c *buttonChrome) brush(face buttonFace) *walk.SolidColorBrush {
 	}
 }
 
-func (c *buttonChrome) border(face buttonFace) walk.Pen {
+func (c *buttonChrome) frameBrush(face buttonFace) *walk.SolidColorBrush {
 	if c == nil {
 		return nil
 	}
@@ -105,9 +104,36 @@ func (c *buttonChrome) border(face buttonFace) walk.Pen {
 	case facePrimary, facePrimaryHot, facePrimaryPress, facePrimaryOff:
 		return nil
 	case faceHot, facePress:
-		return c.goldLine
+		return c.accent
 	default:
-		return c.line
+		return c.frame
+	}
+}
+
+// buttonStripe — золотая полоска внутри рамки: 1 px сверху, снизу и слева,
+// чтобы заливка не вылезала за контур.
+func buttonStripe(w, h, stripe int) (x, y, sw, sh int) {
+	if w < 3 || h < 3 || stripe < 1 {
+		return 0, 0, 0, 0
+	}
+	if stripe > w-2 {
+		stripe = w - 2
+	}
+	return 1, 1, stripe, h - 2
+}
+
+func strokeRectPixels(canvas *walk.Canvas, brush *walk.SolidColorBrush, r walk.Rectangle) {
+	if canvas == nil || brush == nil || r.Width < 1 || r.Height < 1 {
+		return
+	}
+	_ = canvas.FillRectanglePixels(brush, walk.Rectangle{X: r.X, Y: r.Y, Width: r.Width, Height: 1})
+	_ = canvas.FillRectanglePixels(brush, walk.Rectangle{X: r.X, Y: r.Y + r.Height - 1, Width: r.Width, Height: 1})
+	if r.Height <= 2 {
+		return
+	}
+	_ = canvas.FillRectanglePixels(brush, walk.Rectangle{X: r.X, Y: r.Y + 1, Width: 1, Height: r.Height - 2})
+	if r.Width > 1 {
+		_ = canvas.FillRectanglePixels(brush, walk.Rectangle{X: r.X + r.Width - 1, Y: r.Y + 1, Width: 1, Height: r.Height - 2})
 	}
 }
 
@@ -228,20 +254,15 @@ func (b *themeButton) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 	}
 	if !b.primary && b.chrome != nil && b.chrome.accent != nil {
 		dpi := b.widget.DPI()
-		stripe := walk.IntFrom96DPI(3, dpi)
-		_ = canvas.FillRectanglePixels(b.chrome.accent, walk.Rectangle{
-			X: bounds.X, Y: bounds.Y, Width: stripe, Height: bounds.Height,
-		})
+		sx, sy, sw, sh := buttonStripe(bounds.Width, bounds.Height, walk.IntFrom96DPI(3, dpi))
+		if sw > 0 && sh > 0 {
+			_ = canvas.FillRectanglePixels(b.chrome.accent, walk.Rectangle{
+				X: bounds.X + sx, Y: bounds.Y + sy, Width: sw, Height: sh,
+			})
+		}
 	}
-	if pen := b.chrome.border(face); pen != nil {
-		r := bounds
-		if r.Width > 1 {
-			r.Width--
-		}
-		if r.Height > 1 {
-			r.Height--
-		}
-		_ = canvas.DrawRectanglePixels(pen, r)
+	if b.chrome != nil {
+		strokeRectPixels(canvas, b.chrome.frameBrush(face), bounds)
 	}
 	if b.chrome == nil || b.chrome.font == nil || b.text == "" {
 		return nil

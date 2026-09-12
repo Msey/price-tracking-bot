@@ -13,7 +13,16 @@ import (
 const (
 	tipDateProbe  = "00.00.00 00:00"
 	tipPriceProbe = "99 999 999 ₽"
+	tipGrowNum    = 5
+	tipGrowDen    = 4
 )
+
+func growTip(n int) int {
+	if n < 1 {
+		return n
+	}
+	return n * tipGrowNum / tipGrowDen
+}
 
 func (b *board) createTip(parent *walk.CustomWidget) {
 	if parent == nil || b.tipHost != nil {
@@ -87,7 +96,7 @@ func (b *board) paintTipFace(canvas *walk.Canvas, _ walk.Rectangle) error {
 		_ = canvas.DrawRectanglePixels(b.goldPen, bounds)
 	}
 	dpi := b.dpi()
-	pad := walk.IntFrom96DPI(4, dpi)
+	pad := growTip(walk.IntFrom96DPI(4, dpi))
 	gap := walk.IntFrom96DPI(1, dpi)
 	innerW := bounds.Width - pad*2
 	innerH := bounds.Height - pad*2
@@ -227,13 +236,13 @@ func (b *board) ensureTipSize() {
 	if priceSz.Width > innerW {
 		innerW = priceSz.Width
 	}
-	b.tipW = innerW + pad*2 + walk.IntFrom96DPI(4, dpi)
-	b.tipH = dateSz.Height + gap + priceSz.Height + pad*2
+	b.tipW = growTip(innerW + pad*2 + walk.IntFrom96DPI(4, dpi))
+	b.tipH = growTip(dateSz.Height + gap + priceSz.Height + pad*2)
 	if b.tipW < 1 {
-		b.tipW = walk.IntFrom96DPI(88, dpi)
+		b.tipW = growTip(walk.IntFrom96DPI(88, dpi))
 	}
 	if b.tipH < 1 {
-		b.tipH = walk.IntFrom96DPI(28, dpi)
+		b.tipH = growTip(walk.IntFrom96DPI(28, dpi))
 	}
 	b.tipDPI = dpi
 }
