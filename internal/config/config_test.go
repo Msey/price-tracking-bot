@@ -90,45 +90,6 @@ func TestLoadDisablesUI(t *testing.T) {
 	}
 }
 
-func TestLoadGUIUser(t *testing.T) {
-	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
-	t.Setenv("DEFAULT_CITY", "moscow")
-	t.Setenv("GUI_USER", "42")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.GUIUser != 42 || cfg.GUIUserID() != 42 {
-		t.Fatalf("GUIUser=%d GUIUserID=%d", cfg.GUIUser, cfg.GUIUserID())
-	}
-}
-
-func TestLoadRejectsBadGUIUser(t *testing.T) {
-	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
-	t.Setenv("DEFAULT_CITY", "moscow")
-	t.Setenv("GUI_USER", "нет")
-
-	if _, err := Load(); err == nil {
-		t.Fatal("ожидалась ошибка на GUI_USER")
-	}
-}
-
-func TestGUIUserIDFromAllowed(t *testing.T) {
-	one := Config{AllowedUsers: map[int64]bool{7: true}}
-	if one.GUIUserID() != 7 {
-		t.Fatalf("единственный ALLOWED_USERS: %d", one.GUIUserID())
-	}
-	one.GUIUser = 9
-	if one.GUIUserID() != 9 {
-		t.Fatal("GUI_USER важнее ALLOWED_USERS")
-	}
-	many := Config{AllowedUsers: map[int64]bool{1: true, 2: true}}
-	if many.GUIUserID() != 0 {
-		t.Fatal("несколько ALLOWED_USERS без GUI_USER — автовыбор")
-	}
-}
-
 func TestLoadDisablesGUI(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
 	t.Setenv("DEFAULT_CITY", "moscow")

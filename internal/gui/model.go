@@ -68,11 +68,8 @@ func (it Item) same(other Item) bool {
 	return true
 }
 
-func loadItems(ctx context.Context, store *storage.Store, userID int64) ([]Item, error) {
-	if userID <= 0 {
-		return nil, nil
-	}
-	reqs, err := store.ListUserRequests(ctx, userID)
+func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
+	reqs, err := store.ListAllRequests(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -172,21 +169,4 @@ func priceChanges(prev, next []Item) []string {
 		out = append(out, it.Title+": "+was.Price+" → "+it.Price)
 	}
 	return out
-}
-
-// pickUserID выбирает, чей список показать в окне. preferred — GUI_USER
-// или уже выбранный в комбобоксе id; ids — у кого сейчас есть ссылки.
-func pickUserID(preferred int64, ids []int64) int64 {
-	if preferred > 0 {
-		for _, id := range ids {
-			if id == preferred {
-				return preferred
-			}
-		}
-		return preferred
-	}
-	if len(ids) == 0 {
-		return 0
-	}
-	return ids[0]
 }

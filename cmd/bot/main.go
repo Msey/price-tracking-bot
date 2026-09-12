@@ -128,15 +128,12 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 
 	if cfg.GUI && gui.Available() {
 		go bot.Start(ctx)
-		guiUser := cfg.GUIUserID()
 		err := gui.Run(ctx, gui.Options{
 			Store:         store,
 			DataPath:      cfg.DatabasePath,
 			Log:           log,
 			StartHidden:   startHiddenFromArgs(os.Args[1:]),
 			BotUsername:   bot.Username(),
-			UserID:        guiUser,
-			UserLocked:    guiUser > 0,
 			CheckNow:      tr.RequestCheck,
 			CheckBusy:     tr.Busy,
 			CheckStatus:   func() string { return statusLine(bot, tr) },
