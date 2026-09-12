@@ -128,6 +128,24 @@ func priceMove(from, to int64) int {
 	}
 }
 
+// sampleChartLabel — ценник на смене цены или на первом «нет в наличии»
+// после живого замера, чтобы серая точка не оставалась без числа.
+func sampleChartLabel(samples []Sample, i int) bool {
+	if i < 0 || i >= len(samples) {
+		return false
+	}
+	if !samples[i].Available {
+		return i == 0 || samples[i-1].Available
+	}
+	if i > 0 && !samples[i-1].Available {
+		return true
+	}
+	if i == 0 {
+		return true
+	}
+	return samples[i].Price != samples[i-1].Price
+}
+
 // firstPriceLabel — писать цену только на первом узле группы с одной
 // ценой. Пока цена не сменилась, остальные точки остаются без подписи.
 func firstPriceLabel(prices []int64, i int) bool {

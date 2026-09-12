@@ -327,6 +327,27 @@ func newTestBrowser(t *testing.T) *Browser {
 	return b
 }
 
+func TestPushLatestBitsKeepsNewest(t *testing.T) {
+	ch := make(chan pageBits, 2)
+	pushLatestBits(ch, pageBits{Title: "1"})
+	pushLatestBits(ch, pageBits{Title: "2"})
+	pushLatestBits(ch, pageBits{Title: "3"})
+	var got []string
+drain:
+	for {
+		select {
+		case b := <-ch:
+			got = append(got, b.Title)
+		default:
+			break drain
+		}
+	}
+	if len(got) != 2 || got[len(got)-1] != "3" {
+		t.Fatalf("снимки %v, последний должен быть 3", got)
+	}
+	pushLatestBits(nil, pageBits{Title: "x"})
+}
+
 func waitJobJSON(t *testing.T, b *Browser, timeout time.Duration) map[string]string {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, "http://"+b.addr+"/ext/wait-job", nil)

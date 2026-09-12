@@ -69,6 +69,19 @@ func TestTelegramLinkEscapes(t *testing.T) {
 	}
 }
 
+func TestFormatLastPrice(t *testing.T) {
+	if FormatLastPrice(sql.NullInt64{}, sql.NullInt64{}) != "—" {
+		t.Fatal("без цены — прочерк")
+	}
+	zeroGone := sql.NullInt64{Int64: 0, Valid: true}
+	if FormatLastPrice(zeroGone, sql.NullInt64{Int64: 0, Valid: true}) != "—" {
+		t.Fatal("нулевой серый замер — не «0 ₽»")
+	}
+	if FormatLastPrice(sql.NullInt64{Int64: 10000, Valid: true}, sql.NullInt64{Int64: 0, Valid: true}) != "100\u00a0₽" {
+		t.Fatal("последняя известная цена остаётся, даже если товара нет")
+	}
+}
+
 func TestCityTitle(t *testing.T) {
 	if CityTitle(" Moscow ") != "Москва" {
 		t.Error("moscow переводится")

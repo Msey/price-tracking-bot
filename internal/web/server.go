@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
@@ -172,10 +171,7 @@ func buildPage(reqs []storage.Request) pageData {
 
 func viewOf(req storage.Request) rowView {
 	status, class := view.Status(req)
-	price := "—"
-	if req.LastPriceKopecks.Valid {
-		price = money.FormatKopecks(req.LastPriceKopecks.Int64)
-	}
+	price := view.FormatLastPrice(req.LastPriceKopecks, req.LastAvailable)
 	checked := "ещё не было"
 	if req.LastCheckedAt.Valid && req.LastCheckedAt.String != "" {
 		checked = view.FormatWhen(req.LastCheckedAt.String)

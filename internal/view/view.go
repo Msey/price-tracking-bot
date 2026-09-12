@@ -4,6 +4,7 @@
 package view
 
 import (
+	"database/sql"
 	"fmt"
 	"html"
 	"strings"
@@ -31,6 +32,18 @@ func Status(req storage.Request) (text, class string) {
 		return "нет в наличии", "bad"
 	}
 	return "отслеживается", "ok"
+}
+
+// FormatLastPrice — цена в списках. Нулевой серый замер (цены ещё не
+// было) рисуем прочерком, а не «0 ₽».
+func FormatLastPrice(price, available sql.NullInt64) string {
+	if !price.Valid {
+		return "—"
+	}
+	if price.Int64 == 0 && (!available.Valid || available.Int64 == 0) {
+		return "—"
+	}
+	return money.FormatKopecks(price.Int64)
 }
 
 func CityTitle(city string) string {

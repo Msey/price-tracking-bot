@@ -87,6 +87,60 @@ func TestSameItems(t *testing.T) {
 	if sameItems(a, nil) {
 		t.Error("разная длина — различие")
 	}
+	if sameItems(a, []Item{{ProductID: 1, Title: "A", Price: "1", URL: "https://x", Samples: a[0].Samples}}) {
+		t.Error("смена URL должна давать различие")
+	}
+	if sameItems(
+		[]Item{{ProductID: 1, Title: "A", Price: "1", City: "Москва", Samples: a[0].Samples}},
+		[]Item{{ProductID: 1, Title: "A", Price: "1", City: "Казань", Samples: a[0].Samples}},
+	) {
+		t.Error("смена города должна давать различие")
+	}
+	if sameItems(
+		[]Item{{ProductID: 1, Title: "A", Price: "1", SiteKey: "dns", Samples: a[0].Samples}},
+		[]Item{{ProductID: 1, Title: "A", Price: "1", SiteKey: "ozon", Samples: a[0].Samples}},
+	) {
+		t.Error("смена сайта должна давать различие")
+	}
+}
+
+func TestChartSampleSkipsUnknownMissing(t *testing.T) {
+	if _, ok := chartSample(storage.SnapshotRow{PriceKopecks: 0, Available: false}); ok {
+		t.Fatal("нулевой серый замер не должен попадать на график")
+	}
+	s, ok := chartSample(storage.SnapshotRow{PriceKopecks: 15500, Available: false, CheckedAt: "2026-01-02 03:04:05"})
+	if !ok || s.Price != 15500 || s.Available {
+		t.Fatalf("последняя известная цена должна остаться: %+v", s)
+	}
+}
+
+func TestLoadItemsSkipsUnknownMissing(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "miss.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordSnapshot(ctx, p.ID, "", 0, "RUB", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadItems(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("строк %d", len(got))
+	}
+	if got[0].Price != "—" {
+		t.Errorf("цена %q, ожидался прочерк", got[0].Price)
+	}
+	if len(got[0].Samples) != 0 || len(got[0].Points) != 0 {
+		t.Fatalf("нулевой серый замер не должен рисоваться: %+v", got[0].Samples)
+	}
 }
 
 func TestSparkline(t *testing.T) {
@@ -185,6 +239,25 @@ func TestFirstPriceLabel(t *testing.T) {
 	}
 	if !firstPriceLabel([]int64{7}, 0) {
 		t.Fatal("единственный узел подписывается")
+	}
+}
+
+func TestSampleChartLabel(t *testing.T) {
+	samples := []Sample{
+		{Price: 100, Available: true},
+		{Price: 100, Available: true},
+		{Price: 100, Available: false},
+		{Price: 100, Available: false},
+		{Price: 90, Available: true},
+	}
+	want := []bool{true, false, true, false, true}
+	for i, w := range want {
+		if got := sampleChartLabel(samples, i); got != w {
+			t.Errorf("i=%d: %v, нужно %v", i, got, w)
+		}
+	}
+	if sampleChartLabel(nil, 0) || sampleChartLabel(samples, -1) {
+		t.Fatal("пустой срез")
 	}
 }
 

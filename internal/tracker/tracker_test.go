@@ -90,8 +90,123 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(hist) != 4 {
+		t.Fatalf("в истории %d строк, ожидалось 4 (каждый замер — точка)", len(hist))
+	}
+}
+
+type missingDNS struct {
+	miss  bool
+	price int64
+}
+
+func (f *missingDNS) Fetch(context.Context, storage.Product) (fetch.Snapshot, error) {
+	if f.miss {
+		return fetch.Snapshot{}, fetch.ErrNoPrice
+	}
+	return fetch.Snapshot{Name: "Товар", PriceKopecks: f.price, Currency: "RUB", Available: true}, nil
+}
+
+func (f *missingDNS) Paused() (time.Time, string, bool) { return time.Time{}, "", false }
+
+func TestCheckOneRecordsMissingPrice(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "miss.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &missingDNS{price: 15500}
+	tr := New(store, map[string]Fetcher{"dns": dns}, &fakeNotify{}, Config{
+		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
+	}, nil)
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.miss = true
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(hist) != 2 {
-		t.Fatalf("в истории %d строк, ожидалось 2 (повтор цены обновляет дату)", len(hist))
+		t.Fatalf("строк %d", len(hist))
+	}
+	if hist[0].Available || hist[0].PriceKopecks != 15500 {
+		t.Fatalf("последний замер должен быть серым с прошлой ценой: %+v", hist[0])
+	}
+	if !hist[1].Available || hist[1].PriceKopecks != 15500 {
+		t.Fatalf("предыдущий живой замер: %+v", hist[1])
+	}
+
+	empty, _, err := store.AddSubscription(ctx, 7, "dns", "aaaaaaaaaaaaaaaa", "https://www.dns-shop.ru/product/aaaaaaaaaaaaaaaa/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.checkOne(ctx, empty); err != nil {
+		t.Fatal(err)
+	}
+	none, err := store.LastSnapshots(ctx, empty.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 1 || none[0].Available || none[0].PriceKopecks != 0 {
+		t.Fatalf("без истории пишем нулевой серый замер, чтобы сдвинуть очередь: %+v", none)
+	}
+	due, err := store.ProductsDue(ctx, "dns", time.Now().Add(-20*time.Minute), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range due {
+		if p.ID == empty.ID {
+			t.Fatal("только что проверенный товар без цены не должен снова быть в очереди")
+		}
+	}
+}
+
+func TestCheckOneNotifiesConfirmedDropWithoutBaseline(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "drop.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	notes := &fakeNotify{}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
+		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
+	}, nil)
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.price = 9000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 0 {
+		t.Fatal("одно новое значение не уведомляет")
+	}
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 {
+		t.Fatalf("два одинаковых новых значения после первой цены должны уведомить, получено %d", notes.n)
 	}
 }
 

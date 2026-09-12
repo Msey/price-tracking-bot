@@ -14,10 +14,14 @@ type Decision struct {
 
 // Decide смотрит историю newest-first и флаг repeated от RecordSnapshot.
 //
-// Повтор той же цены не плодит строку в БД, поэтому подтверждение A/B —
-// это repeated=true, а не две одинаковые записи подряд. Уведомляем только
-// когда одно и то же значение пришло два раза. Первая устойчивая цена
-// становится базой и в чат не пишется.
+// Каждая проверка пишет строку в историю. repeated=true значит «та же
+// цена, что в прошлый раз» — это подтверждение A/B, а не смена цены.
+// Уведомляем, когда одно и то же значение пришло два раза. Первая
+// устойчивая цена становится базой и в чат не пишется.
+//
+// Если база ещё не отмечена, ищем в более старых строках другую цену
+// или наличие: иначе плато из двух новых значений (90, 90, 100)
+// ошибочно становилось бы базой и молча проглатывало снижение.
 func Decide(history []storage.SnapshotRow, notified storage.NotifiedState, repeated bool) Decision {
 	if len(history) == 0 {
 		return Decision{}
@@ -29,15 +33,24 @@ func Decide(history []storage.SnapshotRow, notified storage.NotifiedState, repea
 		}
 		return Decision{Current: cur}
 	}
-	if !notified.Set {
+	prev, ok := confirmedPrevious(history, cur, notified)
+	if !ok {
 		return Decision{Baseline: true, Current: cur}
 	}
-	if cur.PriceKopecks == notified.Kopecks && cur.Available == notified.Available {
+	if cur.PriceKopecks == prev.PriceKopecks && cur.Available == prev.Available {
 		return Decision{Current: cur}
 	}
-	return Decision{
-		Notify:   true,
-		Current:  cur,
-		Previous: storage.SnapshotRow{PriceKopecks: notified.Kopecks, Available: notified.Available},
+	return Decision{Notify: true, Current: cur, Previous: prev}
+}
+
+func confirmedPrevious(history []storage.SnapshotRow, cur storage.SnapshotRow, notified storage.NotifiedState) (storage.SnapshotRow, bool) {
+	if notified.Set {
+		return storage.SnapshotRow{PriceKopecks: notified.Kopecks, Available: notified.Available}, true
 	}
+	for _, row := range history[1:] {
+		if row.PriceKopecks != cur.PriceKopecks || row.Available != cur.Available {
+			return row, true
+		}
+	}
+	return storage.SnapshotRow{}, false
 }

@@ -3,7 +3,6 @@ package gui
 import (
 	"context"
 
-	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
@@ -30,8 +29,9 @@ type Item struct {
 
 // Sample — один замер цены на графике.
 type Sample struct {
-	Price int64
-	When  string
+	Price     int64
+	When      string
+	Available bool
 }
 
 // sameItems — список не изменился и перерисовывать нечего. Сравниваются
@@ -53,6 +53,10 @@ func (it Item) same(other Item) bool {
 	if it.ProductID != other.ProductID ||
 		it.UserID != other.UserID ||
 		it.Title != other.Title ||
+		it.URL != other.URL ||
+		it.SiteKey != other.SiteKey ||
+		it.Site != other.Site ||
+		it.City != other.City ||
 		it.Price != other.Price ||
 		it.Status != other.Status ||
 		it.Checked != other.Checked ||
@@ -87,8 +91,12 @@ func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
 		pts := make([]int64, 0, len(rows))
 		samples := make([]Sample, 0, len(rows))
 		for _, row := range rows {
-			pts = append(pts, row.PriceKopecks)
-			samples = append(samples, Sample{Price: row.PriceKopecks, When: view.FormatWhenShort(row.CheckedAt)})
+			sample, ok := chartSample(row)
+			if !ok {
+				continue
+			}
+			pts = append(pts, sample.Price)
+			samples = append(samples, sample)
 		}
 		grouped[i].Points = pts
 		grouped[i].Samples = samples
@@ -117,12 +125,22 @@ func groupRequests(reqs []storage.Request) []Item {
 	return out
 }
 
+// chartSample пропускает нулевой серый замер: цены ещё не было,
+// ставить точку на графике некуда.
+func chartSample(row storage.SnapshotRow) (Sample, bool) {
+	if row.PriceKopecks == 0 && !row.Available {
+		return Sample{}, false
+	}
+	return Sample{
+		Price:     row.PriceKopecks,
+		When:      view.FormatWhenShort(row.CheckedAt),
+		Available: row.Available,
+	}, true
+}
+
 func itemFromRequest(req storage.Request) Item {
 	status, _ := view.Status(req)
-	price := "—"
-	if req.LastPriceKopecks.Valid {
-		price = money.FormatKopecks(req.LastPriceKopecks.Int64)
-	}
+	price := view.FormatLastPrice(req.LastPriceKopecks, req.LastAvailable)
 	checked := "ещё не проверяли"
 	if req.LastCheckedAt.Valid && req.LastCheckedAt.String != "" {
 		checked = view.FormatWhen(req.LastCheckedAt.String)

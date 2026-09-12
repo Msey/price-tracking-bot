@@ -125,6 +125,21 @@ func TestHardBlockedTitle(t *testing.T) {
 	if hardBlocked(pageBits{Title: "Похоже, нет соединения"}) {
 		t.Fatal("заглушка Ozon — не HTTP 403, её можно пройти кнопкой «Обновить»")
 	}
+	if hardBlocked(pageBits{Title: "Honor 403"}) {
+		t.Fatal("артикул 403 в названии — не бан")
+	}
+	if hardBlocked(pageBits{Title: "401 серия"}) {
+		t.Fatal("401 в названии модели — не бан")
+	}
+	if !hardBlocked(pageBits{Title: "403 Forbidden"}) {
+		t.Fatal("классический HTTP-заголовок должен быть баном")
+	}
+	if !hardBlocked(pageBits{Title: "403"}) {
+		t.Fatal("голый 403 — бан")
+	}
+	if !hardBlocked(pageBits{Title: "403 - Access Denied"}) {
+		t.Fatal("403 с разделителем — бан")
+	}
 	if !needsHuman(pageBits{Title: "Похоже, нет соединения"}) {
 		t.Fatal("заглушка Ozon должна ждать нажатия «Обновить страницу»")
 	}

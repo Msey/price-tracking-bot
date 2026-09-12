@@ -36,6 +36,10 @@ type Config struct {
 	StartupDelay time.Duration
 }
 
+// Сколько последних замеров смотрит Decide: двух мало, если цена сменилась
+// и сразу подтвердилась (90, 90, 100) — старое значение иначе не видно.
+const decisionHistoryLimit = 16
+
 type Tracker struct {
 	store    *storage.Store
 	fetchers map[string]Fetcher
@@ -345,16 +349,40 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 		return fmt.Errorf("нет загрузчика для сайта %s", p.Site)
 	}
 	snap, err := f.Fetch(ctx, p)
+	if errors.Is(err, fetch.ErrNoPrice) {
+		return t.recordMissing(ctx, p)
+	}
 	if err != nil {
 		return err
 	}
 	t.log.Info("цена записана", "site", p.Site, "product", p.ID, "name", snap.Name, "kopecks", snap.PriceKopecks, "available", snap.Available)
-	repeated, err := t.store.RecordSnapshot(ctx, p.ID, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available)
+	return t.afterSnapshot(ctx, p, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available)
+}
+
+// recordMissing — цена на странице не нашлась: товар сняли или закончился.
+// На графике нужна серая точка на последней известной цене, а не дыра.
+func (t *Tracker) recordMissing(ctx context.Context, p storage.Product) error {
+	last, err := t.store.LastSnapshots(ctx, p.ID, 1)
+	if err != nil {
+		return err
+	}
+	if len(last) == 0 {
+		// Нулевой серый замер сдвигает очередь ProductsDue. На графике
+		// его не рисуем: цены ещё не было, ставить точку некуда.
+		t.log.Info("цена не найдена, в истории ещё нет цены", "product", p.ID)
+		return t.afterSnapshot(ctx, p, "", 0, "", false)
+	}
+	t.log.Info("цена не найдена, пишу последнюю известную", "product", p.ID, "kopecks", last[0].PriceKopecks)
+	return t.afterSnapshot(ctx, p, "", last[0].PriceKopecks, "", false)
+}
+
+func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name string, kopecks int64, currency string, available bool) error {
+	repeated, err := t.store.RecordSnapshot(ctx, p.ID, name, kopecks, currency, available)
 	if err != nil {
 		return err
 	}
 
-	history, err := t.store.LastSnapshots(ctx, p.ID, 2)
+	history, err := t.store.LastSnapshots(ctx, p.ID, decisionHistoryLimit)
 	if err != nil {
 		return err
 	}
@@ -371,8 +399,8 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 		product, err := t.store.ProductByID(ctx, p.ID)
 		if err != nil {
 			product = p
-			if snap.Name != "" {
-				product.Name = snap.Name
+			if name != "" {
+				product.Name = name
 			}
 		}
 		if err := t.announce(ctx, product, d); err != nil {
@@ -385,6 +413,9 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 }
 
 func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) error {
+	if t.notify == nil {
+		return nil
+	}
 	chats, err := t.store.SubscriberChats(ctx, p.ID)
 	if err != nil {
 		return err

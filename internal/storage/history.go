@@ -69,10 +69,14 @@ func (s *Store) ActiveProducts(ctx context.Context, site string) ([]Product, err
 	return out, nil
 }
 
-// RecordSnapshot пишет замер. Если цена, валюта и наличие совпали с последней
-// записью товара, новая строка не создаётся — обновляется только checked_at.
-// repeated=true как раз в этом случае: подтверждение A/B без плато в истории.
+// RecordSnapshot пишет каждый замер отдельной строкой, даже если цена
+// не изменилась: иначе на графике не видно, что проверка прошла.
+// repeated=true, когда цена, валюта и наличие совпали с предыдущей
+// записью — трекер не шлёт повторное уведомление в Telegram.
 func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string, kopecks int64, currency string, available bool) (repeated bool, err error) {
+	if productID < 1 {
+		return false, fmt.Errorf("storage: запись цены товара %d: нет такого товара", productID)
+	}
 	if currency == "" {
 		currency = "RUB"
 	}
@@ -88,24 +92,19 @@ func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string
 	}
 	now := formatTime(time.Now())
 
-	var lastID, lastKopecks int64
+	var lastKopecks int64
 	var lastCurrency string
 	var lastAvail int
-	err = tx.QueryRowContext(ctx, sqlLastSnapshot, productID).Scan(&lastID, &lastKopecks, &lastCurrency, &lastAvail)
+	err = tx.QueryRowContext(ctx, sqlLastSnapshot, productID).Scan(&lastKopecks, &lastCurrency, &lastAvail)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return false, fmt.Errorf("storage: последняя цена товара %d: %w", productID, err)
 	case lastKopecks == kopecks && lastAvail == avail && lastCurrency == currency:
-		if _, err := tx.ExecContext(ctx, sqlTouchSnapshot, now, lastID); err != nil {
-			return false, fmt.Errorf("storage: обновление даты товара %d: %w", productID, err)
-		}
 		repeated = true
 	}
-	if !repeated {
-		if _, err := tx.ExecContext(ctx, sqlInsertSnapshot, productID, kopecks, currency, avail, now); err != nil {
-			return false, fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
-		}
+	if _, err := tx.ExecContext(ctx, sqlInsertSnapshot, productID, kopecks, currency, avail, now); err != nil {
+		return false, fmt.Errorf("storage: запись цены товара %d: %w", productID, err)
 	}
 	if name != "" {
 		if _, err := tx.ExecContext(ctx, sqlUpdateProductName, name, productID, name); err != nil {

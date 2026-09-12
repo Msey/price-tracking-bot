@@ -142,13 +142,11 @@ const (
 		ORDER BY p.id`
 
 	sqlLastSnapshot = `
-		SELECT id, price_kopecks, currency, available
+		SELECT price_kopecks, currency, available
 		FROM price_history
 		WHERE product_id = ?
 		ORDER BY checked_at DESC, id DESC
 		LIMIT 1`
-
-	sqlTouchSnapshot = `UPDATE price_history SET checked_at = ? WHERE id = ?`
 
 	sqlInsertSnapshot = `
 		INSERT INTO price_history (product_id, price_kopecks, currency, available, checked_at)

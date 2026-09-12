@@ -33,9 +33,11 @@ type board struct {
 	accent       *walk.SolidColorBrush
 	upBrush      *walk.SolidColorBrush
 	downBrush    *walk.SolidColorBrush
+	missBrush    *walk.SolidColorBrush
 	goldPen      walk.Pen
 	upPen        walk.Pen
 	downPen      walk.Pen
+	missPen      walk.Pen
 	gridPen      walk.Pen
 	icons        map[string]walk.Image
 	trash        walk.Image
@@ -63,6 +65,7 @@ type board struct {
 	tipW     int
 	tipH     int
 	tipDPI   int
+	tipMiss  bool
 }
 
 func (b *board) setItems(next []Item) {
@@ -205,14 +208,20 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			for _, p := range pts {
 				b.wpts = append(b.wpts, walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y})
 			}
-			if len(pts) == 1 && b.goldPen != nil {
-				left, right := singlePriceSpan(chart.Width, pts[0])
-				_ = canvas.DrawLinePixels(b.goldPen,
-					walk.Point{X: chart.X + left.X, Y: chart.Y + left.Y},
-					walk.Point{X: chart.X + right.X, Y: chart.Y + right.Y})
+			if len(pts) == 1 {
+				pen := b.goldPen
+				if len(item.Samples) > 0 && !item.Samples[0].Available && b.missPen != nil {
+					pen = b.missPen
+				}
+				if pen != nil {
+					left, right := singlePriceSpan(chart.Width, pts[0])
+					_ = canvas.DrawLinePixels(pen,
+						walk.Point{X: chart.X + left.X, Y: chart.Y + left.Y},
+						walk.Point{X: chart.X + right.X, Y: chart.Y + right.Y})
+				}
 			}
 			for j := 1; j < len(b.wpts) && j < len(item.Points); j++ {
-				if pen := b.sparkPen(item.Points[j-1], item.Points[j]); pen != nil {
+				if pen := b.segmentPen(item, j); pen != nil {
 					_ = canvas.DrawLinePixels(pen, b.wpts[j-1], b.wpts[j])
 				}
 			}
@@ -230,12 +239,9 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 				if hot {
 					r = hotR
 				}
-				brush := b.accent
-				if j > 0 && j < len(item.Points) {
-					brush = b.sparkNode(item.Points[j-1], item.Points[j])
-				}
+				brush := b.nodeBrush(item, j)
 				fillChartNode(canvas, brush, p.X, p.Y, r)
-				if j >= len(item.Samples) || !firstPriceLabel(item.Points, j) {
+				if !sampleChartLabel(item.Samples, j) {
 					continue
 				}
 				price := money.FormatKopecks(item.Samples[j].Price)
@@ -243,7 +249,11 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 				if !ok || box.X < labelEdge {
 					continue
 				}
-				_ = canvas.DrawTextPixels(price, b.metaFont, gold, box,
+				labelClr := gold
+				if !item.Samples[j].Available {
+					labelClr = muted
+				}
+				_ = canvas.DrawTextPixels(price, b.metaFont, labelClr, box,
 					walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextNoPrefix)
 				labelEdge = box.X + box.Width + walk.IntFrom96DPI(6, dpi)
 			}
@@ -315,6 +325,30 @@ func fillChartNode(canvas *walk.Canvas, brush *walk.SolidColorBrush, cx, cy, r i
 			X: cx - half, Y: cy + dy, Width: half*2 + 1, Height: 1,
 		})
 	}
+}
+
+func (b *board) sampleMissing(it Item, i int) bool {
+	return i >= 0 && i < len(it.Samples) && !it.Samples[i].Available
+}
+
+func (b *board) segmentPen(it Item, j int) walk.Pen {
+	if b.sampleMissing(it, j) && b.missPen != nil {
+		return b.missPen
+	}
+	if j < 1 || j >= len(it.Points) {
+		return b.goldPen
+	}
+	return b.sparkPen(it.Points[j-1], it.Points[j])
+}
+
+func (b *board) nodeBrush(it Item, j int) *walk.SolidColorBrush {
+	if b.sampleMissing(it, j) && b.missBrush != nil {
+		return b.missBrush
+	}
+	if j > 0 && j < len(it.Points) {
+		return b.sparkNode(it.Points[j-1], it.Points[j])
+	}
+	return b.accent
 }
 
 func (b *board) sparkPen(from, to int64) walk.Pen {

@@ -8,12 +8,14 @@ import (
 	"github.com/lxn/walk"
 )
 
-func TestGrowTip(t *testing.T) {
-	if growTip(80) != 100 || growTip(32) != 40 {
-		t.Fatalf("1.25x: %d %d", growTip(80), growTip(32))
+func TestTipBoxSizeHugsText(t *testing.T) {
+	w, h := tipBoxSize(80, 16, 50, 18, 2, 1)
+	if w != 84 || h != 39 {
+		t.Fatalf("рамка %dx%d, ждали 84x39 под текст плюс pad", w, h)
 	}
-	if growTip(0) != 0 || growTip(-1) != -1 {
-		t.Fatal("нулевой и отрицательный размер не трогаем")
+	w, h = tipBoxSize(10, 8, 40, 10, 2, 1)
+	if w != 44 {
+		t.Fatalf("ширина по более длинной строке: %d", w)
 	}
 }
 

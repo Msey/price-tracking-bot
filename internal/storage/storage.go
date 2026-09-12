@@ -363,6 +363,9 @@ func (s *Store) DeleteOwnAt(ctx context.Context, chatID int64, n int) (Product, 
 // DeleteProductSubscriptions снимает товар со всех чатов. Карточка
 // остаётся в базе, чтобы повторное /add не потеряло историю цен.
 func (s *Store) DeleteProductSubscriptions(ctx context.Context, productID int64) (int64, error) {
+	if productID < 1 {
+		return 0, nil
+	}
 	res, err := s.db.ExecContext(ctx, sqlDeleteProductSubscriptions, productID)
 	if err != nil {
 		return 0, fmt.Errorf("storage: удаление подписок на товар %d: %w", productID, err)

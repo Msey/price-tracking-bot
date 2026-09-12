@@ -503,11 +503,28 @@ func (b *Browser) handleResult(w http.ResponseWriter, r *http.Request) {
 		"css", strings.TrimSpace(msg.Bits.CSSPrice) != "",
 		"ldjson", len(msg.Bits.LDJSON),
 	)
-	select {
-	case j.bits <- msg.Bits:
-	default:
-	}
+	pushLatestBits(j.bits, msg.Bits)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// pushLatestBits кладёт свежий снимок, вытесняя самый старый, если
+// буфер полон. Иначе расширение при быстрых мутациях DOM теряло бы
+// последний (уже с ценой) кадр.
+func pushLatestBits(ch chan pageBits, bits pageBits) {
+	if ch == nil {
+		return
+	}
+	for i := 0; i < cap(ch)+2; i++ {
+		select {
+		case ch <- bits:
+			return
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+		}
+	}
 }
 
 func sameShopURL(job, href string) bool {

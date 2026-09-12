@@ -51,9 +51,8 @@ func parseOzonHTML(html string) (Snapshot, error) {
 }
 
 func dnsChallengeHTML(html string) bool {
-	t := strings.ToLower(extractTitle(html))
 	h := strings.ToLower(html)
-	if strings.Contains(t, "403") || strings.Contains(t, "401") || strings.Contains(t, "forbidden") {
+	if titleLooksLikeHTTPBan(extractTitle(html)) {
 		return true
 	}
 	return strings.Contains(html, "Доступ к сайту") ||

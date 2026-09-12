@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -47,6 +48,15 @@ func TestHumanDuration(t *testing.T) {
 	}
 	if got := humanDuration(20 * time.Minute); got != "20 мин" {
 		t.Errorf("минуты: %q", got)
+	}
+}
+
+func TestDescribePriceZeroMissing(t *testing.T) {
+	got := describePrice(storage.Tracked{
+		LastPriceKopecks: sql.NullInt64{Int64: 0, Valid: true},
+	})
+	if !strings.Contains(got, "цена не найдена") {
+		t.Fatalf("нулевая цена: %q", got)
 	}
 }
 

@@ -78,8 +78,50 @@ func parseBits(p pageBits) (Snapshot, error) {
 }
 
 func hardBlocked(p pageBits) bool {
-	t := strings.ToLower(strings.TrimSpace(p.Title))
-	return strings.Contains(t, "403") || strings.Contains(t, "401")
+	return titleLooksLikeHTTPBan(p.Title)
+}
+
+// titleLooksLikeHTTPBan — заголовок страницы бана, а не артикул вроде
+// «Honor 403» или «401 серия».
+func titleLooksLikeHTTPBan(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	if t == "" {
+		return false
+	}
+	if t == "403" || t == "401" || t == "forbidden" {
+		return true
+	}
+	for _, n := range []string{
+		"403 forbidden", "401 unauthorized",
+		"error 403", "error 401",
+		"http 403", "http 401",
+		"403 error", "401 error",
+		"access forbidden",
+	} {
+		if strings.Contains(t, n) {
+			return true
+		}
+	}
+	return httpCodeTitlePrefix(t)
+}
+
+// httpCodeTitlePrefix — «403 - Access Denied», но не «401 серия».
+func httpCodeTitlePrefix(t string) bool {
+	for _, code := range []string{"403", "401"} {
+		if !strings.HasPrefix(t, code) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(t, code))
+		if rest == "" {
+			return true
+		}
+		for _, sep := range []string{"-", "–", "|", ":", "/"} {
+			if strings.HasPrefix(rest, sep) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ozonInterstitial — заглушка «Похоже, нет соединения». Это антибот, а не

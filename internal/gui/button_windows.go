@@ -145,6 +145,7 @@ type themeButton struct {
 	primary  bool
 	hover    bool
 	pressed  bool
+	captured bool
 	tracking bool
 	prevProc uintptr
 	onClick  func()
@@ -292,6 +293,7 @@ func (b *themeButton) mouseDown(x, y int, button walk.MouseButton) {
 	}
 	b.pressed = true
 	win.SetCapture(b.widget.Handle())
+	b.captured = true
 	b.invalidate()
 }
 
@@ -299,7 +301,10 @@ func (b *themeButton) mouseUp(x, y int, button walk.MouseButton) {
 	if b == nil || button != walk.LeftButton {
 		return
 	}
-	win.ReleaseCapture()
+	if b.captured {
+		win.ReleaseCapture()
+		b.captured = false
+	}
 	was := b.pressed
 	b.pressed = false
 	inside := b.contains(x, y)
@@ -374,6 +379,10 @@ func themedButtonProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr
 	case win.WM_MOUSELEAVE:
 		b.onLeave()
 	case win.WM_NCDESTROY:
+		if b.captured {
+			win.ReleaseCapture()
+			b.captured = false
+		}
 		themedButtons.Delete(hwnd)
 	}
 	if b.prevProc == 0 {

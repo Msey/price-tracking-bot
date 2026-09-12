@@ -493,11 +493,14 @@ func describePrice(t storage.Tracked) string {
 	if !t.LastPriceKopecks.Valid {
 		return "цена ещё не проверялась"
 	}
-	price := money.FormatKopecks(t.LastPriceKopecks.Int64)
-	if !t.LastCheckedAt.Valid {
-		return price
+	when := ""
+	if t.LastCheckedAt.Valid {
+		when = " (проверено " + t.LastCheckedAt.String + ")"
 	}
-	return price + " (проверено " + t.LastCheckedAt.String + ")"
+	if t.LastPriceKopecks.Int64 == 0 {
+		return "цена не найдена" + when
+	}
+	return money.FormatKopecks(t.LastPriceKopecks.Int64) + when
 }
 
 func humanDuration(d time.Duration) string {

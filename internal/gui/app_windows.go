@@ -218,6 +218,16 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(upPen)
+	missBrush, err := walk.NewSolidColorBrush(walk.RGB(148, 140, 128))
+	if err != nil {
+		return err
+	}
+	keep(missBrush)
+	missPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, missBrush)
+	if err != nil {
+		return err
+	}
+	keep(missPen)
 
 	icon, err := walk.NewIconFromImage(trayImage())
 	if err != nil {
@@ -244,9 +254,11 @@ func Run(ctx context.Context, opt Options) error {
 			accent:    accent,
 			upBrush:   upBrush,
 			downBrush: downBrush,
+			missBrush: missBrush,
 			goldPen:   goldPen,
 			upPen:     upPen,
 			downPen:   downPen,
+			missPen:   missPen,
 			gridPen:   gridPen,
 			hover:     -1,
 			tipItem:   -1,

@@ -8,20 +8,23 @@ import (
 	"github.com/lxn/win"
 )
 
-// Шаблоны ширины контейнера: дата как FormatWhenShort, цена с запасом
-// под семизначные суммы. Сама рамка после этого не меняет размер.
-const (
-	tipDateProbe  = "00.00.00 00:00"
-	tipPriceProbe = "99 999 999 ₽"
-	tipGrowNum    = 5
-	tipGrowDen    = 4
-)
+// tipPad96 — зазор между текстом и рамкой.
+const tipPad96 = 5
 
-func growTip(n int) int {
-	if n < 1 {
-		return n
+func tipBoxSize(dateW, dateH, priceW, priceH, pad, gap int) (w, h int) {
+	innerW := dateW
+	if priceW > innerW {
+		innerW = priceW
 	}
-	return n * tipGrowNum / tipGrowDen
+	w = innerW + pad*2
+	h = dateH + gap + priceH + pad*2
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return
 }
 
 func (b *board) createTip(parent *walk.CustomWidget) {
@@ -96,14 +99,17 @@ func (b *board) paintTipFace(canvas *walk.Canvas, _ walk.Rectangle) error {
 		_ = canvas.DrawRectanglePixels(b.goldPen, bounds)
 	}
 	dpi := b.dpi()
-	pad := growTip(walk.IntFrom96DPI(4, dpi))
+	pad := walk.IntFrom96DPI(tipPad96, dpi)
 	gap := walk.IntFrom96DPI(1, dpi)
 	innerW := bounds.Width - pad*2
 	innerH := bounds.Height - pad*2
 	if innerW < 1 || innerH < 1 {
 		return nil
 	}
-	dateH := (innerH - gap) / 2
+	dateH := b.measureLine(b.dateFont(), b.tipDate).Height
+	if dateH < 1 || dateH > innerH {
+		dateH = (innerH - gap) / 2
+	}
 	if dateH < 1 {
 		dateH = innerH
 	}
@@ -121,7 +127,11 @@ func (b *board) paintTipFace(canvas *walk.Canvas, _ walk.Rectangle) error {
 		_ = canvas.DrawTextPixels(b.tipDate, dateFont, textClr, dateBox, fmt)
 	}
 	if priceFont != nil && b.tipPrice != "" && priceBox.Height > 0 {
-		_ = canvas.DrawTextPixels(b.tipPrice, priceFont, gold, priceBox, fmt)
+		priceClr := gold
+		if b.tipMiss {
+			priceClr = walk.RGB(154, 141, 122)
+		}
+		_ = canvas.DrawTextPixels(b.tipPrice, priceFont, priceClr, priceBox, fmt)
 	}
 	return nil
 }
@@ -145,12 +155,12 @@ func (b *board) priceTipFont() *walk.Font {
 
 func (b *board) ensureTipFonts() {
 	if b.tipFont == nil {
-		if f, err := walk.NewFont("Segoe UI", 6, 0); err == nil {
+		if f, err := walk.NewFont("Segoe UI", 10, 0); err == nil {
 			b.tipFont = f
 		}
 	}
 	if b.tipPriceFont == nil {
-		if f, err := walk.NewFont("Segoe UI", 6, walk.FontBold); err == nil {
+		if f, err := walk.NewFont("Segoe UI", 10, walk.FontBold); err == nil {
 			b.tipPriceFont = f
 		}
 	}
@@ -194,23 +204,25 @@ func (b *board) syncTip() {
 		b.hideTip()
 		return
 	}
-	b.ensureTipSize()
+	b.ensureTipSize(date, price)
 	view := b.widget.ClientBoundsPixels()
 	r := tipRect(nx, ny, view, b.tipW, b.tipH, walk.IntFrom96DPI(5, b.dpi()))
-	textChanged := date != b.tipDate || price != b.tipPrice
+	textChanged := date != b.tipDate || price != b.tipPrice || b.tipMiss != !sample.Available
 	b.tipDate = date
 	b.tipPrice = price
+	b.tipMiss = !sample.Available
 	if r != b.tipHost.BoundsPixels() {
 		_ = b.tipHost.SetBoundsPixels(r)
 		if b.tipFace != nil {
 			_ = b.tipFace.SetBoundsPixels(walk.Rectangle{Width: r.Width, Height: r.Height})
 		}
 	}
+	shown := false
 	if !b.tipHost.Visible() {
 		b.tipHost.SetVisible(true)
-		return
+		shown = true
 	}
-	if textChanged && b.tipFace != nil {
+	if (shown || textChanged) && b.tipFace != nil {
 		b.tipFace.Invalidate()
 	}
 }
@@ -221,30 +233,23 @@ func (b *board) hideTip() {
 	}
 	b.tipDate = ""
 	b.tipPrice = ""
+	b.tipMiss = false
 }
 
-func (b *board) ensureTipSize() {
+func (b *board) ensureTipSize(date, price string) {
 	dpi := b.dpi()
-	if b.tipW > 0 && b.tipDPI == dpi {
-		return
+	if date == "" {
+		date = " "
 	}
-	dateSz := b.measureLine(b.dateFont(), tipDateProbe)
-	priceSz := b.measureLine(b.priceTipFont(), tipPriceProbe)
-	pad := walk.IntFrom96DPI(4, dpi)
+	if price == "" {
+		price = " "
+	}
+	dateSz := b.measureLine(b.dateFont(), date)
+	priceSz := b.measureLine(b.priceTipFont(), price)
+	pad := walk.IntFrom96DPI(tipPad96, dpi)
 	gap := walk.IntFrom96DPI(1, dpi)
-	innerW := dateSz.Width
-	if priceSz.Width > innerW {
-		innerW = priceSz.Width
-	}
-	b.tipW = growTip(innerW + pad*2 + walk.IntFrom96DPI(4, dpi))
-	b.tipH = growTip(dateSz.Height + gap + priceSz.Height + pad*2)
-	if b.tipW < 1 {
-		b.tipW = growTip(walk.IntFrom96DPI(88, dpi))
-	}
-	if b.tipH < 1 {
-		b.tipH = growTip(walk.IntFrom96DPI(28, dpi))
-	}
-	b.tipDPI = dpi
+	w, h := tipBoxSize(dateSz.Width, dateSz.Height, priceSz.Width, priceSz.Height, pad, gap)
+	b.tipW, b.tipH, b.tipDPI = w, h, dpi
 }
 
 func (b *board) nodePixel(item, node int) (x, y int, ok bool) {

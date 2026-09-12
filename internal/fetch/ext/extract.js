@@ -36,13 +36,36 @@ function hasNode(sel) {
   }
 }
 
+function titleLooksLikeHTTPBan(title) {
+  var t = String(title || '').toLowerCase().replace(/^\s+|\s+$/g, '');
+  if (!t) return false;
+  if (t === '403' || t === '401' || t === 'forbidden') return true;
+  if (t.indexOf('403 forbidden') !== -1 || t.indexOf('401 unauthorized') !== -1) return true;
+  if (t.indexOf('error 403') !== -1 || t.indexOf('error 401') !== -1) return true;
+  if (t.indexOf('http 403') !== -1 || t.indexOf('http 401') !== -1) return true;
+  if (t.indexOf('403 error') !== -1 || t.indexOf('401 error') !== -1) return true;
+  if (t.indexOf('access forbidden') !== -1) return true;
+  return httpCodeTitlePrefix(t);
+}
+
+function httpCodeTitlePrefix(t) {
+  var codes = ['403', '401'];
+  for (var i = 0; i < codes.length; i++) {
+    var code = codes[i];
+    if (t.indexOf(code) !== 0) continue;
+    var rest = t.slice(code.length).replace(/^\s+/, '');
+    if (!rest) return true;
+    var ch = rest.charAt(0);
+    if (ch === '-' || ch === '–' || ch === '|' || ch === ':' || ch === '/') return true;
+  }
+  return false;
+}
+
 function extractDNS() {
   var title = document.title || '';
   var body = haystack();
-  var lowTitle = title.toLowerCase();
   var low = body.toLowerCase();
-  var qrator = lowTitle.indexOf('403') !== -1 || lowTitle.indexOf('401') !== -1
-    || lowTitle.indexOf('forbidden') !== -1
+  var qrator = titleLooksLikeHTTPBan(title)
     || body.indexOf('Доступ к сайту') !== -1
     || low.indexOf('доступ запрещен') !== -1;
   var price = document.querySelector('div.product-buy__price');
