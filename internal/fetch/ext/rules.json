@@ -1,0 +1,40 @@
+[
+  {
+    "id": 1,
+    "priority": 2,
+    "action": { "type": "allow" },
+    "condition": {
+      "requestDomains": [
+        "smartcaptcha.yandexcloud.net",
+        "captcha.yandex.ru",
+        "captcha-api.yandex.ru",
+        "px-cdn.net",
+        "px-cloud.net",
+        "pxchk.net",
+        "perimeterx.net"
+      ],
+      "resourceTypes": [
+        "image",
+        "media",
+        "font",
+        "script",
+        "xmlhttprequest",
+        "sub_frame",
+        "stylesheet"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "initiatorDomains": [
+        "ozon.ru",
+        "dns-shop.ru",
+        "market.yandex.ru"
+      ],
+      "resourceTypes": ["image", "media", "font", "ping"]
+    }
+  }
+]

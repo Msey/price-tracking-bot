@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Price tracking helper",
   "version": "1.0.0",
-  "permissions": ["tabs", "cookies"],
+  "permissions": ["tabs", "cookies", "declarativeNetRequest"],
   "host_permissions": [
     "http://127.0.0.1:*/*",
     "http://localhost:*/*",
@@ -12,6 +12,15 @@
     "*://*.market.yandex.ru/*",
     "*://market.yandex.ru/*"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "block_media",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -25,7 +34,7 @@
         "*://market.yandex.ru/*"
       ],
       "js": ["extract.js"],
-      "run_at": "document_idle",
+      "run_at": "document_end",
       "all_frames": false
     }
   ]

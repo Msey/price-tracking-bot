@@ -26,7 +26,7 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
-//go:embed ext/manifest.json ext/background.js ext/extract.js
+//go:embed ext/manifest.json ext/background.js ext/extract.js ext/rules.json
 var extFS embed.FS
 
 // Browser — один долгоживущий Chrome на все магазины. Страницы читает

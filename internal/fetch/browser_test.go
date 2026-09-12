@@ -102,6 +102,9 @@ func TestSameShopURL(t *testing.T) {
 	if !sameShopURL(ozon, "https://ozon.ru/product/other-123") {
 		t.Fatal("другой товар ozon в той же вкладке")
 	}
+	if !sameShopURL("https://www.ozon.ru/t/WcmKNaP", "https://www.ozon.ru/product/germetik-2422341064") {
+		t.Fatal("короткая ozon после редиректа")
+	}
 	market := "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913"
 	if !sameShopURL(market, "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913?nid=1") {
 		t.Fatal("market с query")
@@ -111,6 +114,51 @@ func TestSameShopURL(t *testing.T) {
 	}
 	if sameShopURL(ozon, "about:blank") {
 		t.Fatal("about:blank")
+	}
+}
+
+func TestManifestBlocksHeavyMedia(t *testing.T) {
+	raw, err := extFS.ReadFile("ext/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"declarativeNetRequest"`) {
+		t.Fatal("нужен declarativeNetRequest, чтобы резать картинки без CDP")
+	}
+	if !strings.Contains(s, `"path": "rules.json"`) {
+		t.Fatal("нет rules.json в манифесте")
+	}
+	if !strings.Contains(s, `"document_end"`) {
+		t.Fatal("съём цены должен начинаться на document_end, не после idle")
+	}
+	if strings.Contains(s, `"document_idle"`) {
+		t.Fatal("document_idle ждёт тяжёлую загрузку")
+	}
+
+	rules, err := extFS.ReadFile("ext/rules.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := string(rules)
+	for _, want := range []string{`"block"`, `"image"`, `"media"`, `"font"`, "smartcaptcha", "px-cdn.net"} {
+		if !strings.Contains(rs, want) {
+			t.Errorf("в rules.json нет %s", want)
+		}
+	}
+}
+
+func TestExtractTakesPriceEarly(t *testing.T) {
+	raw, err := extFS.ReadFile("ext/extract.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "MutationObserver") {
+		t.Fatal("нужен MutationObserver, чтобы поймать узел цены сразу")
+	}
+	if strings.Contains(s, "document.documentElement.innerHTML") {
+		t.Fatal("полный innerHTML снова сериализует карточку")
 	}
 }
 
@@ -169,6 +217,9 @@ func TestStampManifestBumpsVersion(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"http://127.0.0.1:*/*"`) {
 		t.Fatal("потеряли host_permissions")
+	}
+	if !strings.Contains(string(got), `"path": "rules.json"`) && !strings.Contains(string(got), `"path":"rules.json"`) {
+		t.Fatal("потеряли rules.json")
 	}
 }
 

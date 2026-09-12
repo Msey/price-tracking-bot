@@ -82,6 +82,8 @@ var (
 	// /product/slug-2422341064 — id всегда хвост пути, чтобы «420» в названии не стал ключом.
 	ozonProductPath = regexp.MustCompile(`(?i)^/product/([^/]*?)(\d{6,})(?:/|$)`)
 	ozonSafeSlug    = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,240}$`)
+	// Короткая шаринговая ссылка из приложения: /t/WcmKNaP.
+	ozonShortPath = regexp.MustCompile(`(?i)^/t/([a-z0-9]{4,24})(?:/|$)`)
 )
 
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
@@ -175,7 +177,16 @@ func yandexKeyAndSlug(path string) (key, slug string) {
 }
 
 func parseOzon(u *url.URL) (Ref, error) {
-	m := ozonProductPath.FindStringSubmatch(u.EscapedPath())
+	path := u.EscapedPath()
+	if m := ozonShortPath.FindStringSubmatch(path); m != nil {
+		code := m[1]
+		return Ref{
+			Site:        Ozon,
+			ExternalKey: "t:" + strings.ToLower(code),
+			URL:         "https://www.ozon.ru/t/" + code,
+		}, nil
+	}
+	m := ozonProductPath.FindStringSubmatch(path)
 	if m == nil {
 		return Ref{}, ErrNotAProduct
 	}

@@ -250,6 +250,29 @@ func TestParseOzon(t *testing.T) {
 	}
 }
 
+func TestParseOzonShortLink(t *testing.T) {
+	const (
+		canonical = "https://www.ozon.ru/t/WcmKNaP"
+		key       = "t:wcmknap"
+	)
+	tests := []string{
+		"https://ozon.ru/t/WcmKNaP",
+		"https://www.ozon.ru/t/WcmKNaP",
+		"https://m.ozon.ru/t/WcmKNaP/",
+		"https://www.ozon.ru/t/WcmKNaP?from=share",
+		"держи https://ozon.ru/t/WcmKNaP.",
+	}
+	for _, in := range tests {
+		ref, err := Parse(in)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		if ref.Site != Ozon || ref.ExternalKey != key || ref.URL != canonical {
+			t.Errorf("Parse(%q) = %+v, ожидались site=ozon key=%s url=%s", in, ref, key, canonical)
+		}
+	}
+}
+
 func TestParseOzonDoesNotTakeGramsAsID(t *testing.T) {
 	ref, err := Parse("https://www.ozon.ru/product/germetik-akrilovyy-moment-420-gr-belyy-universalnyy-morozostoykiy-2422341064")
 	if err != nil {
@@ -333,6 +356,7 @@ func TestParseErrors(t *testing.T) {
 		{"неизвестный магазин", "https://example.com/product/123/", ErrUnknownSite},
 		{"wildberries пока не умеем", "https://www.wildberries.ru/catalog/12345/detail.aspx", ErrNotSupported},
 		{"главная ozon", "https://www.ozon.ru/", ErrNotAProduct},
+		{"короткий код ozon /t/", "https://ozon.ru/t/ab", ErrNotAProduct},
 		{"категория ozon", "https://www.ozon.ru/category/germetiki-12345/", ErrNotAProduct},
 		{"короткий id ozon", "https://www.ozon.ru/product/noutbuk-123/", ErrNotAProduct},
 		{"короткий id маркета", "https://market.yandex.ru/product--noutbuk/123", ErrNotAProduct},
