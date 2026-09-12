@@ -61,7 +61,7 @@ func TestDescribePriceZeroMissing(t *testing.T) {
 }
 
 func TestHelpTextIsForUsers(t *testing.T) {
-	for _, want := range []string{"/list", "/del", "DNS", "Ozon"} {
+	for _, want := range []string{"/list", "/del", "DNS", "Ozon", "20 мин", "Первую найденную цену"} {
 		if !strings.Contains(helpText, want) {
 			t.Errorf("в /help нет %q:\n%s", want, helpText)
 		}

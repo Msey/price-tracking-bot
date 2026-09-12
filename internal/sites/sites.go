@@ -58,11 +58,11 @@ func (s Site) Title() string {
 }
 
 // CheckInterval — как часто ходить за ценой. DNS и Маркет банят за частые
-// заходы, поэтому сутки; Ozon держит более частый ритм — раз в час.
+// заходы, поэтому сутки; Ozon держит более частый ритм — раз в 20 минут.
 func (s Site) CheckInterval() time.Duration {
 	switch s {
 	case Ozon:
-		return time.Hour
+		return 20 * time.Minute
 	default:
 		return 24 * time.Hour
 	}

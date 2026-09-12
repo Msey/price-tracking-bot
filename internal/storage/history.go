@@ -72,7 +72,7 @@ func (s *Store) ActiveProducts(ctx context.Context, site string) ([]Product, err
 // RecordSnapshot пишет каждый замер отдельной строкой, даже если цена
 // не изменилась: иначе на графике не видно, что проверка прошла.
 // repeated=true, когда цена, валюта и наличие совпали с предыдущей
-// записью — трекер не шлёт повторное уведомление в Telegram.
+// записью.
 func (s *Store) RecordSnapshot(ctx context.Context, productID int64, name string, kopecks int64, currency string, available bool) (repeated bool, err error) {
 	if productID < 1 {
 		return false, fmt.Errorf("storage: запись цены товара %d: нет такого товара", productID)

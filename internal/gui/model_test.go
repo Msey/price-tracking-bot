@@ -214,6 +214,41 @@ func TestNodeSlots(t *testing.T) {
 	}
 }
 
+func TestCubicBezierEndsAndMid(t *testing.T) {
+	from := point{X: 0, Y: 10}
+	to := point{X: 90, Y: 40}
+	c1, c2 := sparkHandles(from, to)
+	if c1 != (point{X: 30, Y: 10}) || c2 != (point{X: 60, Y: 40}) {
+		t.Fatalf("ручки %v %v", c1, c2)
+	}
+	if cubicBezier(from, c1, c2, to, 0) != from || cubicBezier(from, c1, c2, to, 1) != to {
+		t.Fatal("концы кубики должны совпасть с узлами")
+	}
+	mid := cubicBezier(from, c1, c2, to, 0.5)
+	if mid.X != 45 {
+		t.Fatalf("середина X=%d", mid.X)
+	}
+	if mid.Y <= from.Y || mid.Y >= to.Y {
+		t.Fatalf("середина Y=%d должна быть между %d и %d", mid.Y, from.Y, to.Y)
+	}
+	flat := appendCubic(nil, point{X: 0, Y: 7}, point{X: 40, Y: 7})
+	if len(flat) < 2 || flat[0].Y != 7 || flat[len(flat)-1] != (point{X: 40, Y: 7}) {
+		t.Fatalf("горизонталь: %v", flat)
+	}
+	for _, p := range flat {
+		if p.Y != 7 {
+			t.Fatalf("горизонтальная кубика уехала: %v", p)
+		}
+	}
+	if bezierSteps(from, from) != 0 {
+		t.Fatal("нулевой пролёт")
+	}
+	same := appendCubic(nil, from, from)
+	if len(same) != 1 || same[0] != from {
+		t.Fatalf("совпадающие узлы: %v", same)
+	}
+}
+
 func TestPriceMove(t *testing.T) {
 	if priceMove(100, 90) != -1 {
 		t.Fatal("падение")

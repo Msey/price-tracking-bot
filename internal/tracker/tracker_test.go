@@ -38,7 +38,7 @@ func (f *fakeNotify) Notify(context.Context, int64, string) error {
 	return nil
 }
 
-func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
+func TestCheckOneNotifiesOnFirstChange(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -74,24 +74,18 @@ func TestCheckOneConfirmsBeforeNotify(t *testing.T) {
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	if notes.n != 0 {
-		t.Fatal("одно новое значение не уведомляет")
-	}
-	if err := tr.checkOne(ctx, p); err != nil {
-		t.Fatal(err)
-	}
 	if notes.n != 1 {
-		t.Fatalf("после подтверждения ожидалось 1 уведомление, получено %d", notes.n)
+		t.Fatalf("смена относительно предыдущей цены должна сразу уведомить, получено %d", notes.n)
 	}
-	if dns.calls != 4 {
+	if dns.calls != 3 {
 		t.Fatalf("вызовов fetch %d", dns.calls)
 	}
 	hist, err := store.LastSnapshots(ctx, p.ID, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hist) != 4 {
-		t.Fatalf("в истории %d строк, ожидалось 4 (каждый замер — точка)", len(hist))
+	if len(hist) != 3 {
+		t.Fatalf("в истории %d строк, ожидалось 3 (каждый замер — точка)", len(hist))
 	}
 }
 
@@ -123,7 +117,8 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	}
 
 	dns := &missingDNS{price: 15500}
-	tr := New(store, map[string]Fetcher{"dns": dns}, &fakeNotify{}, Config{
+	notes := &fakeNotify{}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
 		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
 	}, nil)
 
@@ -147,6 +142,9 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	if !hist[1].Available || hist[1].PriceKopecks != 15500 {
 		t.Fatalf("предыдущий живой замер: %+v", hist[1])
 	}
+	if notes.n != 1 {
+		t.Fatalf("пропажа после известной цены должна сразу уведомить, получено %d", notes.n)
+	}
 
 	empty, _, err := store.AddSubscription(ctx, 7, "dns", "aaaaaaaaaaaaaaaa", "https://www.dns-shop.ru/product/aaaaaaaaaaaaaaaa/", "moscow")
 	if err != nil {
@@ -162,6 +160,9 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	if len(none) != 1 || none[0].Available || none[0].PriceKopecks != 0 {
 		t.Fatalf("без истории пишем нулевой серый замер, чтобы сдвинуть очередь: %+v", none)
 	}
+	if notes.n != 1 {
+		t.Fatal("первая проверка без цены не должна писать в чат")
+	}
 	due, err := store.ProductsDue(ctx, "dns", time.Now().Add(-20*time.Minute), 10)
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +174,7 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	}
 }
 
-func TestCheckOneNotifiesConfirmedDropWithoutBaseline(t *testing.T) {
+func TestCheckOneNotifiesDropAfterFirstPrice(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "drop.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -195,18 +196,15 @@ func TestCheckOneNotifiesConfirmedDropWithoutBaseline(t *testing.T) {
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
 	}
+	if notes.n != 0 {
+		t.Fatal("первая цена не уведомляет")
+	}
 	dns.price = 9000
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	if notes.n != 0 {
-		t.Fatal("одно новое значение не уведомляет")
-	}
-	if err := tr.checkOne(ctx, p); err != nil {
-		t.Fatal(err)
-	}
 	if notes.n != 1 {
-		t.Fatalf("два одинаковых новых значения после первой цены должны уведомить, получено %d", notes.n)
+		t.Fatalf("смена после первой цены должна сразу уведомить, получено %d", notes.n)
 	}
 }
 
@@ -217,22 +215,22 @@ func TestMinCheckInterval(t *testing.T) {
 	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}}); got != 24*time.Hour {
 		t.Fatalf("только dns: %s", got)
 	}
-	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}, "ozon": &fakeDNS{}}); got != time.Hour {
+	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}, "ozon": &fakeDNS{}}); got != 20*time.Minute {
 		t.Fatalf("dns+ozon: %s", got)
 	}
 	tr := New(nil, map[string]Fetcher{
 		"dns":           &fakeDNS{},
 		"ozon":          &fakeDNS{},
 		"yandex_market": &fakeDNS{},
-	}, nil, Config{Interval: 20 * time.Minute}, nil)
-	if tr.cfg.Interval != time.Hour {
-		t.Fatalf("пауза автоцикла = %s, ожидался час из-за Ozon", tr.cfg.Interval)
+	}, nil, Config{Interval: time.Hour}, nil)
+	if tr.cfg.Interval != 20*time.Minute {
+		t.Fatalf("пауза автоцикла = %s, ожидалось 20 минут из-за Ozon", tr.cfg.Interval)
 	}
 	if siteCheckInterval("dns") != 24*time.Hour || siteCheckInterval("yandex_market") != 24*time.Hour {
 		t.Fatal("dns и маркет должны быть раз в сутки")
 	}
-	if siteCheckInterval("ozon") != time.Hour {
-		t.Fatal("ozon должен быть раз в час")
+	if siteCheckInterval("ozon") != 20*time.Minute {
+		t.Fatal("ozon должен быть раз в 20 минут")
 	}
 }
 

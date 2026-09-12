@@ -36,8 +36,8 @@ type Config struct {
 	StartupDelay time.Duration
 }
 
-// Сколько последних замеров смотрит Decide: двух мало, если цена сменилась
-// и сразу подтвердилась (90, 90, 100) — старое значение иначе не видно.
+// Сколько последних замеров смотрит Decide: чтобы перешагнуть нулевые
+// серые точки и сравнить с предыдущей известной ценой.
 const decisionHistoryLimit = 16
 
 type Tracker struct {
@@ -377,8 +377,7 @@ func (t *Tracker) recordMissing(ctx context.Context, p storage.Product) error {
 }
 
 func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name string, kopecks int64, currency string, available bool) error {
-	repeated, err := t.store.RecordSnapshot(ctx, p.ID, name, kopecks, currency, available)
-	if err != nil {
+	if _, err := t.store.RecordSnapshot(ctx, p.ID, name, kopecks, currency, available); err != nil {
 		return err
 	}
 
@@ -386,11 +385,7 @@ func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name str
 	if err != nil {
 		return err
 	}
-	notified, err := t.store.Notified(ctx, p.ID)
-	if err != nil {
-		return err
-	}
-	d := Decide(history, notified, repeated)
+	d := Decide(history)
 	switch {
 	case d.Baseline:
 		return t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available)

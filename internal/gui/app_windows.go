@@ -198,7 +198,8 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(goldPen)
-	downBrush, err := walk.NewSolidColorBrush(walk.RGB(232, 86, 74))
+	// Для покупателя рост цены — плохо (красный), падение — хорошо (зелёный).
+	downBrush, err := walk.NewSolidColorBrush(walk.RGB(160, 222, 140))
 	if err != nil {
 		return err
 	}
@@ -208,7 +209,7 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	keep(downPen)
-	upBrush, err := walk.NewSolidColorBrush(walk.RGB(160, 222, 140))
+	upBrush, err := walk.NewSolidColorBrush(walk.RGB(232, 86, 74))
 	if err != nil {
 		return err
 	}

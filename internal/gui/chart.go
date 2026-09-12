@@ -1,5 +1,7 @@
 package gui
 
+import "math"
+
 // point — пиксель графика.
 type point struct{ X, Y int }
 
@@ -113,6 +115,70 @@ func hitSample(width, n, x int) int {
 		return n - 1
 	}
 	return i
+}
+
+// sparkHandles — контрольные точки кубики с горизонтальными касательными:
+// кривая выходит с уровня from и заходит в to без излома на узле.
+func sparkHandles(from, to point) (c1, c2 point) {
+	dx := to.X - from.X
+	return point{X: from.X + dx/3, Y: from.Y}, point{X: to.X - dx/3, Y: to.Y}
+}
+
+func cubicBezier(p0, c1, c2, p1 point, t float64) point {
+	if t <= 0 {
+		return p0
+	}
+	if t >= 1 {
+		return p1
+	}
+	u := 1 - t
+	uu, tt := u*u, t*t
+	x := uu*u*float64(p0.X) + 3*uu*t*float64(c1.X) + 3*u*tt*float64(c2.X) + tt*t*float64(p1.X)
+	y := uu*u*float64(p0.Y) + 3*uu*t*float64(c1.Y) + 3*u*tt*float64(c2.Y) + tt*t*float64(p1.Y)
+	return point{X: int(math.Round(x)), Y: int(math.Round(y))}
+}
+
+func bezierSteps(from, to point) int {
+	if from == to {
+		return 0
+	}
+	dx := to.X - from.X
+	if dx < 0 {
+		dx = -dx
+	}
+	dy := to.Y - from.Y
+	if dy < 0 {
+		dy = -dy
+	}
+	d := dx
+	if dy > d {
+		d = dy
+	}
+	n := d / 6
+	if n < 8 {
+		return 8
+	}
+	if n > 32 {
+		return 32
+	}
+	return n
+}
+
+// appendCubic дописывает кубику Безье от from к to. Первая точка
+// не дублируется, если она уже последний элемент dst.
+func appendCubic(dst []point, from, to point) []point {
+	if len(dst) == 0 || dst[len(dst)-1] != from {
+		dst = append(dst, from)
+	}
+	n := bezierSteps(from, to)
+	if n < 1 {
+		return dst
+	}
+	c1, c2 := sparkHandles(from, to)
+	for i := 1; i <= n; i++ {
+		dst = append(dst, cubicBezier(from, c1, c2, to, float64(i)/float64(n)))
+	}
+	return dst
 }
 
 // priceMove — направление от одного замера к следующему:

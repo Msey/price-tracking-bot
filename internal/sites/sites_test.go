@@ -377,8 +377,8 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestCheckInterval(t *testing.T) {
-	if got := Ozon.CheckInterval(); got != time.Hour {
-		t.Errorf("ozon = %s, ожидался час", got)
+	if got := Ozon.CheckInterval(); got != 20*time.Minute {
+		t.Errorf("ozon = %s, ожидалось 20 минут", got)
 	}
 	if got := DNS.CheckInterval(); got != 24*time.Hour {
 		t.Errorf("dns = %s, ожидались сутки", got)

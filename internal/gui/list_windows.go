@@ -45,10 +45,12 @@ type board struct {
 	onOpen       func(Item)
 	onDelete     func(Item)
 	hoverTrash   bool
-	// spark/wpts живут между кадрами: Invalidate при движении мыши
+	// spark/wpts/curve живут между кадрами: Invalidate при движении мыши
 	// иначе выделял бы новый срез на каждую видимую строку.
-	spark []point
-	wpts  []walk.Point
+	spark  []point
+	wpts   []walk.Point
+	curve  []point
+	wcurve []walk.Point
 	// measureDC — обычный memory DC для GetTextExtentPoint32. MeasureTextPixels
 	// у walk рисует в CreateEnhMetaFile и не закрывает его до Dispose: каждый
 	// замер подписи и тултипа дописывал записи в EMF, и Working Set рос.
@@ -222,7 +224,7 @@ func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
 			}
 			for j := 1; j < len(b.wpts) && j < len(item.Points); j++ {
 				if pen := b.segmentPen(item, j); pen != nil {
-					_ = canvas.DrawLinePixels(pen, b.wpts[j-1], b.wpts[j])
+					b.drawSparkCurve(canvas, pen, b.wpts[j-1], b.wpts[j])
 				}
 			}
 
@@ -325,6 +327,21 @@ func fillChartNode(canvas *walk.Canvas, brush *walk.SolidColorBrush, cx, cy, r i
 			X: cx - half, Y: cy + dy, Width: half*2 + 1, Height: 1,
 		})
 	}
+}
+
+func (b *board) drawSparkCurve(canvas *walk.Canvas, pen walk.Pen, from, to walk.Point) {
+	if canvas == nil || pen == nil {
+		return
+	}
+	b.curve = appendCubic(b.curve[:0], point{X: from.X, Y: from.Y}, point{X: to.X, Y: to.Y})
+	b.wcurve = b.wcurve[:0]
+	for _, p := range b.curve {
+		b.wcurve = append(b.wcurve, walk.Point{X: p.X, Y: p.Y})
+	}
+	if len(b.wcurve) < 2 {
+		return
+	}
+	_ = canvas.DrawPolylinePixels(pen, b.wcurve)
 }
 
 func (b *board) sampleMissing(it Item, i int) bool {
