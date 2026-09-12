@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	pageWait    = 45 * time.Second
-	pollEvery   = time.Second
-	captchaWait = 4 * time.Minute
+	pageWait      = 45 * time.Second
+	pollEvery     = time.Second
+	captchaWait   = 4 * time.Minute
+	ozonBankGrace = 8 * time.Second
 )
 
 func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBits, parse func(pageBits) (Snapshot, error), onHuman func(pageBits)) (Snapshot, error) {
@@ -21,6 +22,7 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 	told := false
 	var last pageBits
 	var lastErr error = ErrNoPrice
+	var bankUntil time.Time
 	poll := time.NewTimer(pollEvery)
 	defer poll.Stop()
 	for {
@@ -35,7 +37,10 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			if hardBlocked(last) {
 				return Snapshot{}, challengeWithTitle(last.Title)
 			}
-			snap, err := parse(last)
+			if last.SkipLDJSON && bankUntil.IsZero() {
+				bankUntil = time.Now().Add(bankGraceOf(last))
+			}
+			snap, err := parsePriceBits(last, parse, bankUntil)
 			if err == nil {
 				return snap, nil
 			}
@@ -51,6 +56,13 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			}
 		case <-poll.C:
 			resetTimer(poll, pollEvery)
+			if last.SkipLDJSON && !bankUntil.IsZero() {
+				snap, err := parsePriceBits(last, parse, bankUntil)
+				if err == nil {
+					return snap, nil
+				}
+				lastErr = err
+			}
 			if time.Now().After(deadline) {
 				if needsHuman(last) || hardBlocked(last) {
 					return Snapshot{}, challengeWithTitle(last.Title)
@@ -62,6 +74,25 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			}
 		}
 	}
+}
+
+func bankGraceOf(p pageBits) time.Duration {
+	if p.BankGraceMs > 0 {
+		return time.Duration(p.BankGraceMs) * time.Millisecond
+	}
+	return ozonBankGrace
+}
+
+func parsePriceBits(p pageBits, parse func(pageBits) (Snapshot, error), bankUntil time.Time) (Snapshot, error) {
+	snap, err := parse(p)
+	if err == nil {
+		return snap, nil
+	}
+	if p.SkipLDJSON && !bankUntil.IsZero() && !time.Now().Before(bankUntil) {
+		p.SkipLDJSON = false
+		return parse(p)
+	}
+	return snap, err
 }
 
 func resetTimer(t *time.Timer, d time.Duration) {

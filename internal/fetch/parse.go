@@ -29,20 +29,36 @@ type Snapshot struct {
 }
 
 type pageBits struct {
-	QRATOR    bool     `json:"qrator"`
-	Challenge bool     `json:"challenge"`
-	Blocked   bool     `json:"blocked"`
-	LDJSON    []string `json:"ldjson"`
-	CSSPrice  string   `json:"cssPrice"`
-	Name      string   `json:"name"`
-	Title     string   `json:"title"`
+	QRATOR      bool     `json:"qrator"`
+	Challenge   bool     `json:"challenge"`
+	Blocked     bool     `json:"blocked"`
+	LDJSON      []string `json:"ldjson"`
+	CSSPrice    string   `json:"cssPrice"`
+	Name        string   `json:"name"`
+	Title       string   `json:"title"`
+	SkipLDJSON  bool     `json:"skipLdjson"`
+	BankGraceMs int      `json:"bankGraceMs"`
 }
 
 var (
 	// Цена в узле страницы: одна группа цифр, разряды могут быть разделены пробелами.
 	priceRunRe        = regexp.MustCompile(`[0-9][0-9 ]*`)
+	priceKopecksRe    = regexp.MustCompile(`([0-9])[.,][0-9]{2}\b`)
 	shopTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon"}
+	priceSpaceRepl    = strings.NewReplacer(
+		"\u00a0", " ",
+		"\u202f", " ",
+		"\u2007", " ",
+		"\u2009", " ",
+		"\u200a", " ",
+		"\u2060", " ",
+		"\ufeff", " ",
+	)
 )
+
+func normalizePriceSpaces(s string) string {
+	return priceSpaceRepl.Replace(s)
+}
 
 func botWall(p pageBits) bool {
 	return p.QRATOR || p.Challenge
@@ -258,7 +274,8 @@ func priceToKopecks(n json.Number) (int64, error) {
 func parseDisplayedPrice(s string) (int64, bool) {
 	s = strings.ReplaceAll(s, "&nbsp;", " ")
 	s = strings.ReplaceAll(s, "&#160;", " ")
-	s = strings.ReplaceAll(s, "\u00a0", " ")
+	s = normalizePriceSpaces(s)
+	s = priceKopecksRe.ReplaceAllString(s, "$1")
 	runs := priceRunRe.FindAllString(s, 2)
 	if len(runs) != 1 {
 		return 0, false
@@ -289,8 +306,9 @@ func defaultCurrency(c string) string {
 	return strings.ToUpper(c)
 }
 
-// parseVisiblePriceBits читает цену Маркета и Ozon: там верна та цена,
-// что видна в карточке, а JSON-LD идёт только запасным вариантом.
+// parseVisiblePriceBits читает цену Маркета и Ozon: верна цена в карточке.
+// JSON-LD — запасной вариант, кроме Ozon (skipLdjson): там в разметке
+// часто цена «с другими банками», а нужна «с Ozon банком».
 func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 	if hardBlocked(p) {
 		return Snapshot{}, ErrChallenge
@@ -313,11 +331,13 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 		}, nil
 	}
 
-	if snap, ok := parseLDJSON(p.LDJSON); ok {
-		if name != "" {
-			snap.Name = name
+	if !p.SkipLDJSON {
+		if snap, ok := parseLDJSON(p.LDJSON); ok {
+			if name != "" {
+				snap.Name = name
+			}
+			return snap, nil
 		}
-		return snap, nil
 	}
 	if botWall(p) || ozonInterstitial(p) {
 		return Snapshot{}, ErrChallenge

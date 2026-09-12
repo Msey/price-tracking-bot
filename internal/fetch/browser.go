@@ -54,6 +54,8 @@ type Browser struct {
 type extJob struct {
 	url, site, city string
 	sent            atomic.Bool
+	notedWait       atomic.Bool
+	notedBadCSS     atomic.Bool
 	bits            chan pageBits
 }
 
@@ -502,7 +504,18 @@ func (b *Browser) handleResult(w http.ResponseWriter, r *http.Request) {
 		"blocked", msg.Bits.Blocked,
 		"css", strings.TrimSpace(msg.Bits.CSSPrice) != "",
 		"ldjson", len(msg.Bits.LDJSON),
+		"skipLdjson", msg.Bits.SkipLDJSON,
 	)
+	if j.site == "ozon" && msg.Bits.SkipLDJSON && strings.TrimSpace(msg.Bits.CSSPrice) == "" && j.notedWait.CompareAndSwap(false, true) {
+		b.log.Warn("жду ценник Ozon с банком", "url", j.url, "href", msg.Href, "title", msg.Bits.Title)
+	}
+	if j.site == "ozon" {
+		if css := strings.TrimSpace(msg.Bits.CSSPrice); css != "" {
+			if _, ok := parseDisplayedPrice(css); !ok && j.notedBadCSS.CompareAndSwap(false, true) {
+				b.log.Warn("ценник Ozon не разобрался", "css", clipLog(css, 80), "url", j.url)
+			}
+		}
+	}
 	pushLatestBits(j.bits, msg.Bits)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -706,6 +719,15 @@ func chromeStartError(profile string, err error) error {
 		return fmt.Errorf("Chrome открыл вкладку в уже запущенном браузере и не отдал управление. Нужен отдельный профиль %s: %s", profile, msg)
 	}
 	return fmt.Errorf("%s", msg)
+}
+
+func clipLog(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if n <= 0 || len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func looksLikeExistingSession(msg string) bool {

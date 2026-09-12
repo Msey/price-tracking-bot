@@ -97,6 +97,8 @@ func TestParseDisplayedPrice(t *testing.T) {
 		"421&nbsp;₽":     42100,
 		"от 1 990 ₽":     199000,
 		"1&#160;990 руб": 199000,
+		"5\u202f105 ₽":   510500,
+		"5 105,00 ₽":     510500,
 	}
 	for in, want := range ok {
 		got, fine := parseDisplayedPrice(in)

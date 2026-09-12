@@ -1,8 +1,9 @@
 // Дублирует селекторы из dns.go / market.go / ozon.go: страницу читает
 // расширение в обычном Chrome, без CDP — иначе Ozon показывает
 // «Похоже, нет соединения».
-// Скрипт на document_end: цена уходит, как только узел появился в DOM,
-// не дожидаясь картинок и idle.
+// Скрипт на document_end: цена уходит, как только нужный узел появился
+// в DOM, не дожидаясь картинок и idle. На Ozon ждём ценник
+// «с Ozon Картой» / «с банками Ozon банка», а не первый крупный число.
 
 function ldjson() {
   var scripts = document.querySelectorAll('script[type="application/ld+json"]');
@@ -98,26 +99,179 @@ function extractMarket() {
   };
 }
 
+function ozonBankLabel(s) {
+  s = String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  if (s.indexOf('друг') !== -1) {
+    return false;
+  }
+  var pay = s.indexOf('ozon карт') !== -1
+    || s.indexOf('ozon банк') !== -1
+    || s.indexOf('банком ozon') !== -1
+    || s.indexOf('банками ozon') !== -1;
+  if (!pay) {
+    return false;
+  }
+  // «Ozon Банк» в меню не берём — нужна подпись у ценника.
+  return s.indexOf('с ') !== -1 || s.indexOf('картой') !== -1;
+}
+
+function nodeText(el) {
+  return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+function isolatePrice(s) {
+  s = String(s || '')
+    .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060\ufeff]/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/(\d)[.,](\d{2})\b/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  var m = s.match(/(\d[\d ]{0,14})\s*(₽|руб)/i);
+  if (m) {
+    return m[1].replace(/\s+/g, ' ').trim() + ' ₽';
+  }
+  return '';
+}
+
+function isolateHeadlinePrice(s) {
+  var p = isolatePrice(s);
+  if (p) {
+    return p;
+  }
+  s = String(s || '')
+    .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060\ufeff]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^\d[\d ]{0,14}$/.test(s)) {
+    return s + ' ₽';
+  }
+  return '';
+}
+
+function nearestOzonHeadline(el) {
+  var n = el;
+  for (var up = 0; up < 8 && n; up++) {
+    var sib = n.previousElementSibling;
+    while (sib) {
+      var fromSib = isolatePrice(nodeText(sib));
+      if (fromSib) {
+        return fromSib;
+      }
+      if (sib.classList && /tsHeadline/i.test(sib.className || '')) {
+        fromSib = isolateHeadlinePrice(nodeText(sib));
+        if (fromSib) {
+          return fromSib;
+        }
+      }
+      var h = sib.querySelector ? sib.querySelector('[class*="tsHeadline"]') : null;
+      var fromH = isolateHeadlinePrice(nodeText(h));
+      if (fromH) {
+        return fromH;
+      }
+      sib = sib.previousElementSibling;
+    }
+    var fromSelf = isolateHeadlinePrice(nodeText(n));
+    if (n.classList && /tsHeadline/i.test(n.className || '') && fromSelf) {
+      return fromSelf;
+    }
+    if (n.getAttribute && n.getAttribute('data-widget')) {
+      return '';
+    }
+    n = n.parentElement;
+  }
+  return '';
+}
+
+function ozonSearchRoots() {
+  var roots = [];
+  var w = document.querySelector('[data-widget="webPrice"]');
+  if (w) roots.push(w);
+  var all = document.querySelectorAll('[data-widget]');
+  for (var i = 0; i < all.length && roots.length < 8; i++) {
+    var name = String(all[i].getAttribute('data-widget') || '').toLowerCase();
+    if (name.indexOf('price') !== -1 && all[i] !== w) {
+      roots.push(all[i]);
+    }
+  }
+  return roots;
+}
+
+function ozonWidgetPrice() {
+  var roots = ozonSearchRoots();
+  for (var r = 0; r < roots.length; r++) {
+    var heads = roots[r].querySelectorAll('[class*="tsHeadline"]');
+    for (var i = 0; i < heads.length; i++) {
+      var p = isolateHeadlinePrice(nodeText(heads[i]));
+      if (p) {
+        return p;
+      }
+    }
+    var fromRoot = isolatePrice(nodeText(roots[r]));
+    if (fromRoot) {
+      return fromRoot;
+    }
+  }
+  return '';
+}
+
+// Крупный ценник рядом с подписью «с Ozon Картой» / «с банками Ozon банка».
+// Первый tsHeadline на странице часто другая цена (без карты, JSON-LD).
+function ozonBankPrice() {
+  var roots = ozonSearchRoots();
+  if (document.body) {
+    roots.push(document.body);
+  }
+  for (var r = 0; r < roots.length; r++) {
+    var nodes = roots[r].querySelectorAll('span, div, p, a, label');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = nodeText(nodes[i]);
+      if (t.length < 4 || t.length > 80 || !ozonBankLabel(t)) {
+        continue;
+      }
+      if (nodes[i].querySelector && nodes[i].querySelector('[class*="tsHeadline"]')) {
+        continue;
+      }
+      var price = isolatePrice(nearestOzonHeadline(nodes[i]));
+      if (price) {
+        return price;
+      }
+    }
+  }
+  return '';
+}
+
+var ozonWidgetSince = 0;
+
 function extractOzon() {
   var title = document.title || '';
   var body = haystack();
   var low = body.toLowerCase();
-  var box = document.querySelector('[data-widget="webPrice"] .tsHeadline600Large')
-    || document.querySelector('.tsHeadline600Large');
+  var bank = ozonBankPrice();
+  var widget = ozonWidgetPrice();
+  if (widget && !ozonWidgetSince) {
+    ozonWidgetSince = Date.now();
+  }
+  // Банк — сразу. Иначе через 6 с берём первое число с ₽ в блоке цены.
+  var css = bank;
+  if (!css && widget && Date.now() - ozonWidgetSince >= 6000) {
+    css = widget;
+  }
   var h1 = document.querySelector('h1');
   var blocked = title.indexOf('нет соединения') !== -1
     || title.toLowerCase().indexOf('antibot challenge') !== -1
     || low.indexOf('fab_chig') !== -1
     || body.indexOf('нет соединения') !== -1;
   var challenge = !blocked && (low.indexOf('px-captcha') !== -1 || hasNode('#px-captcha, [id*="px-captcha"]'));
-  if (!blocked && !(box && String(box.textContent || '').replace(/\s/g, ''))) {
+  if (!blocked && !css) {
     window.scrollTo(0, 480);
   }
   return {
     challenge: challenge,
     blocked: blocked,
     ldjson: ldjson(),
-    cssPrice: box ? (box.textContent || '') : '',
+    cssPrice: css,
+    skipLdjson: true,
+    bankGraceMs: 8000,
     name: h1 ? (h1.textContent || '').trim() : '',
     title: title
   };

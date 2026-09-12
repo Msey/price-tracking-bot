@@ -25,8 +25,55 @@ func TestParseOzonHTMLCurrentPrice(t *testing.T) {
 	}
 }
 
+func TestParseOzonHTMLPrefersBankHeadline(t *testing.T) {
+	html := `<h1>Ковер</h1>
+<span class="tsHeadline600Large">5 920&nbsp;₽</span>
+<div data-widget="webPrice">
+	<span class="tsHeadline600Large">5 105&nbsp;₽</span>
+	<span>с банками Ozon банка</span>
+	<span>5 672&nbsp;₽ с другими банками</span>
+</div>
+<script type="application/ld+json">{"@type":"Product","name":"Ковер","offers":{"price":"5920","priceCurrency":"RUB"}}</script>`
+	snap, err := parseOzonHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.PriceKopecks != 510500 {
+		t.Fatalf("цена %d, ожидалось 510500 — ценник с Ozon банком", snap.PriceKopecks)
+	}
+}
+
+func TestParseVisiblePriceBitsSkipsLDJSON(t *testing.T) {
+	_, err := parseVisiblePriceBits(pageBits{
+		SkipLDJSON: true,
+		LDJSON:     []string{`{"@type":"Product","name":"Ковер","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+	})
+	if !errors.Is(err, ErrNoPrice) {
+		t.Fatalf("без ценника банка JSON-LD не берём: %v", err)
+	}
+	snap, err := parseVisiblePriceBits(pageBits{
+		SkipLDJSON: true,
+		CSSPrice:   "5 105 ₽",
+		LDJSON:     []string{`{"@type":"Product","name":"Ковер","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.PriceKopecks != 510500 {
+		t.Fatalf("цена %d", snap.PriceKopecks)
+	}
+}
+
+func TestParseOzonHTMLIgnoresLooseHeadline(t *testing.T) {
+	html := `<h1>Ковер</h1><span class="tsHeadline600Large">5 920 ₽</span>`
+	_, err := parseOzonHTML(html)
+	if !errors.Is(err, ErrNoPrice) {
+		t.Fatalf("первый крупный ценник без подписи банка не берём: %v", err)
+	}
+}
+
 func TestParseOzonHTMLHeadlineFallback(t *testing.T) {
-	html := `<h1>Товар</h1><span class="tsHeadline600Large">1 990 ₽</span>`
+	html := `<h1>Товар</h1><div data-widget="webPrice"><span class="tsHeadline600Large">1 990 ₽</span></div>`
 	snap, err := parseOzonHTML(html)
 	if err != nil {
 		t.Fatal(err)

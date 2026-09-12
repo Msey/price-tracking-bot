@@ -120,7 +120,21 @@ func extractMarketPriceText(html string) string {
 	return ""
 }
 
+var ozonBankLabelRe = regexp.MustCompile(`(?i)с\s+(ozon\s*карт|ozon\s*банк|банком\s+ozon|банками\s+ozon)`)
+
 func extractOzonPriceText(html string) string {
+	low := strings.ToLower(html)
+	if loc := ozonBankLabelRe.FindStringIndex(low); loc != nil {
+		start := loc[0] - 2500
+		if start < 0 {
+			start = 0
+		}
+		window := html[start:loc[1]]
+		matches := ozonHeadlineRe.FindAllStringSubmatch(window, -1)
+		if n := len(matches); n > 0 {
+			return strings.TrimSpace(matches[n-1][1])
+		}
+	}
 	for _, marker := range []string{`data-widget="webPrice"`, `data-widget='webPrice'`} {
 		i := strings.Index(html, marker)
 		if i < 0 {
@@ -129,9 +143,6 @@ func extractOzonPriceText(html string) string {
 		if m := ozonHeadlineRe.FindStringSubmatch(priceWindow(html[i:])); len(m) == 2 {
 			return strings.TrimSpace(m[1])
 		}
-	}
-	if m := ozonHeadlineRe.FindStringSubmatch(html); len(m) == 2 {
-		return strings.TrimSpace(m[1])
 	}
 	return ""
 }

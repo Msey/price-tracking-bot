@@ -160,6 +160,18 @@ func TestExtractTakesPriceEarly(t *testing.T) {
 	if strings.Contains(s, "document.documentElement.innerHTML") {
 		t.Fatal("полный innerHTML снова сериализует карточку")
 	}
+	if !strings.Contains(s, "skipLdjson") {
+		t.Fatal("Ozon не должен закрывать вкладку по JSON-LD")
+	}
+	if !strings.Contains(s, "банками ozon") {
+		t.Fatal("нужен ценник с Ozon банком, не первый крупный")
+	}
+	if !strings.Contains(s, "6000") {
+		t.Fatal("без подписи банка нужен запасной ценник из webPrice, иначе вкладка висит минуту")
+	}
+	if !strings.Contains(s, "isolatePrice") || !strings.Contains(s, "bankGraceMs") {
+		t.Fatal("ценник нужно нормализовать, иначе parseDisplayedPrice молча отказывается")
+	}
 }
 
 func TestManifestAllowsLocalhostAnyPort(t *testing.T) {

@@ -22,6 +22,56 @@ func TestWaitForBitsTakesParsedPrice(t *testing.T) {
 	}
 }
 
+func TestWaitForBitsIgnoresOzonLDJSONUntilBankPrice(t *testing.T) {
+	ch := make(chan pageBits, 2)
+	ch <- pageBits{
+		SkipLDJSON: true,
+		LDJSON:     []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+		Title:      "Ковер",
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		ch <- pageBits{SkipLDJSON: true, CSSPrice: "5 105 ₽", Title: "Ковер"}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.PriceKopecks != 510500 {
+		t.Fatalf("цена %d, ждали ценник с банком", snap.PriceKopecks)
+	}
+}
+
+func TestWaitForBitsOzonFallsBackToLDJSONAfterGrace(t *testing.T) {
+	ch := make(chan pageBits, 2)
+	ch <- pageBits{
+		SkipLDJSON:  true,
+		BankGraceMs: 20,
+		LDJSON:      []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+		Title:       "Ковер",
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		ch <- pageBits{
+			SkipLDJSON:  true,
+			BankGraceMs: 20,
+			LDJSON:      []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+			Title:       "Ковер",
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.PriceKopecks != 592000 {
+		t.Fatalf("после паузы без ценника банка берём JSON-LD: %d", snap.PriceKopecks)
+	}
+}
+
 func TestWaitForBitsTimeoutNoPrice(t *testing.T) {
 	ch := make(chan pageBits)
 	ctx := context.Background()
