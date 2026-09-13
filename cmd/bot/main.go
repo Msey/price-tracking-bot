@@ -73,6 +73,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	if err != nil {
 		return err
 	}
+	store.SetUnlimitedUsers(cfg.UnlimitedUsers)
 	// closeStore вызывается после остановки трекера: иначе последний замер
 	// цикла пишется в уже закрытую базу и молча теряется.
 	closeStore := sync.OnceFunc(func() { _ = store.Close() })

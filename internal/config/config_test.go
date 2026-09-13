@@ -10,6 +10,7 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	t.Setenv("DATABASE_PATH", "test.db")
 	t.Setenv("DEFAULT_CITY", "moscow")
 	t.Setenv("ALLOWED_USERS", "")
+	t.Setenv("UNLIMITED_USERS", "")
 	t.Setenv("GUI", "1")
 
 	cfg, err := Load()
@@ -24,6 +25,9 @@ func TestLoadValidatesTokenAndCity(t *testing.T) {
 	}
 	if !cfg.GUI {
 		t.Error("GUI по умолчанию должен быть включён")
+	}
+	if len(cfg.UnlimitedUsers) != 0 {
+		t.Errorf("UnlimitedUsers = %v, ожидался пустой список", cfg.UnlimitedUsers)
 	}
 }
 
@@ -87,6 +91,32 @@ func TestLoadDisablesUI(t *testing.T) {
 	}
 	if cfg.UIAddr != "" {
 		t.Errorf("UIAddr = %q, ожидалась пустая строка", cfg.UIAddr)
+	}
+}
+
+func TestLoadUnlimitedUsers(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "12345:ABCDEFGHIJKLMNOPQRST")
+	t.Setenv("DEFAULT_CITY", "moscow")
+	t.Setenv("UNLIMITED_USERS", "1001, 1002")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.UnlimitedUsers[1001] || !cfg.UnlimitedUsers[1002] {
+		t.Errorf("UnlimitedUsers = %v", cfg.UnlimitedUsers)
+	}
+	if cfg.UnlimitedUsers[1] {
+		t.Error("чужой id не должен быть в исключениях")
+	}
+}
+
+func TestParseUserIDsRejectsJunk(t *testing.T) {
+	if _, err := parseUserIDs("abc", "UNLIMITED_USERS"); err == nil {
+		t.Fatal("ожидалась ошибка на нечисловом id")
+	}
+	if _, err := parseUserIDs("-1", "UNLIMITED_USERS"); err == nil {
+		t.Fatal("ожидалась ошибка на неположительном id")
 	}
 }
 

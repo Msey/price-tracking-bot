@@ -34,6 +34,9 @@ type Config struct {
 	DefaultCity     string
 	// AllowedUsers пуст, если доступ открыт всем.
 	AllowedUsers map[int64]bool
+	// UnlimitedUsers — Telegram id без потолка ссылок. Живут в .env,
+	// в репозиторий не попадают.
+	UnlimitedUsers map[int64]bool
 	// UIAddr — адрес локальной страницы со всеми заявками.
 	// Пусто или "off" — не поднимать HTTP.
 	UIAddr string
@@ -50,7 +53,8 @@ func Load() (Config, error) {
 		BotToken:     strings.TrimSpace(os.Getenv("BOT_TOKEN")),
 		DatabasePath: envOr("DATABASE_PATH", "bot.db"),
 		DefaultCity:  strings.ToLower(envOr("DEFAULT_CITY", "moscow")),
-		AllowedUsers: map[int64]bool{},
+		AllowedUsers:   map[int64]bool{},
+		UnlimitedUsers: map[int64]bool{},
 	}
 	if cfg.BotToken == "" {
 		return Config{}, ErrNoToken
@@ -104,19 +108,37 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: DEFAULT_CITY %q: только латиница, цифры, дефис и подчёркивание", cfg.DefaultCity)
 	}
 
-	for _, raw := range strings.Split(os.Getenv("ALLOWED_USERS"), ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		id, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return Config{}, fmt.Errorf("config: ALLOWED_USERS содержит %q: %w", raw, err)
-		}
-		cfg.AllowedUsers[id] = true
+	allowed, err := parseUserIDs(os.Getenv("ALLOWED_USERS"), "ALLOWED_USERS")
+	if err != nil {
+		return Config{}, err
 	}
+	cfg.AllowedUsers = allowed
+	unlimited, err := parseUserIDs(os.Getenv("UNLIMITED_USERS"), "UNLIMITED_USERS")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.UnlimitedUsers = unlimited
 
 	return cfg, nil
+}
+
+func parseUserIDs(raw, name string) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("config: %s содержит %q: %w", name, part, err)
+		}
+		if id <= 0 {
+			return nil, fmt.Errorf("config: %s содержит неположительный id %d", name, id)
+		}
+		out[id] = true
+	}
+	return out, nil
 }
 
 // Allowed сообщает, разрешён ли доступ пользователю.

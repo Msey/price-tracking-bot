@@ -35,15 +35,22 @@ const (
 
 var (
 	errOffline = errors.New("telegram: нет связи, уведомление отложено")
-	helpText   = fmt.Sprintf(`Я слежу за ценами на DNS, Яндекс.Маркете и Ozon.
+	helpIntro = `Я слежу за ценами на DNS, Яндекс.Маркете и Ozon.
 
 Пришлите ссылку на карточку товара. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент.
 
 /list — ваши ссылки
 /del номер — снять ссылку
-
-Не больше %d ссылок. Ozon проверяю каждые 20 мин, DNS и Маркет — раз в день.`, storage.MaxSubscriptions)
+`
+	helpShops = "Ozon проверяю каждые 20 мин, DNS и Маркет — раз в день."
 )
+
+func helpFor(unlimited bool) string {
+	if unlimited {
+		return helpIntro + "\n" + helpShops
+	}
+	return helpIntro + fmt.Sprintf("\nНе больше %d ссылок. %s", storage.MaxSubscriptions, helpShops)
+}
 
 type Bot struct {
 	store *storage.Store
@@ -264,12 +271,13 @@ func (b *Bot) handleStart(c telebot.Context) error {
 			return err
 		}
 	}
-	return c.Send(helpText, telebot.NoPreview)
+	return c.Send(helpFor(b.store.UnlimitedSubscriptions(userID)), telebot.NoPreview)
 }
 
 func (b *Bot) handleHelp(c telebot.Context) error {
-	b.log.Info("команда /help", "user_id", telegramUserID(c))
-	return c.Send(helpText, telebot.NoPreview)
+	userID := telegramUserID(c)
+	b.log.Info("команда /help", "user_id", userID)
+	return c.Send(helpFor(b.store.UnlimitedSubscriptions(userID)), telebot.NoPreview)
 }
 
 func (b *Bot) handleText(c telebot.Context) error {

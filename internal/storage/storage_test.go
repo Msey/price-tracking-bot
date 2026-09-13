@@ -493,6 +493,28 @@ func TestSubscriptionCap(t *testing.T) {
 	}
 }
 
+func TestUnlimitedSubscriptionsSkipCap(t *testing.T) {
+	const who int64 = 1003
+	s := newStore(t)
+	s.SetUnlimitedUsers(map[int64]bool{who: true})
+
+	if !s.UnlimitedSubscriptions(who) {
+		t.Fatal("ожидалось исключение с лимита")
+	}
+	if s.UnlimitedSubscriptions(chatAlice) {
+		t.Fatal("обычный пользователь не в исключениях")
+	}
+
+	ctx := context.Background()
+	for i := 0; i < MaxSubscriptions+2; i++ {
+		key := fmt.Sprintf("%08x%08x", i+100, i+100)
+		url := "https://www.dns-shop.ru/product/" + key + "/"
+		if _, _, err := s.AddSubscription(ctx, who, "dns", key, url, "moscow"); err != nil {
+			t.Fatalf("исключение упёрлось в лимит на #%d: %v", i+1, err)
+		}
+	}
+}
+
 func TestOpenRejectsEmptyPath(t *testing.T) {
 	if _, err := Open(""); err == nil {
 		t.Fatal("Open(\"\") должен возвращать ошибку")

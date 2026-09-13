@@ -13,7 +13,7 @@ import (
 )
 
 // MaxSubscriptions — потолок активных ссылок на одного пользователя Telegram.
-const MaxSubscriptions = 10
+const MaxSubscriptions = 5
 
 // ErrTooManySubscriptions — пользователь уже держит MaxSubscriptions товаров.
 var ErrTooManySubscriptions = errors.New("слишком много подписок")
@@ -22,7 +22,34 @@ var ErrTooManySubscriptions = errors.New("слишком много подпис
 var ErrNoUser = errors.New("нет пользователя")
 
 type Store struct {
-	db *sql.DB
+	db        *sql.DB
+	unlimited map[int64]bool
+}
+
+// SetUnlimitedUsers задаёт Telegram id без потолка ссылок. Список приходит
+// из .env (UNLIMITED_USERS), не из кода.
+func (s *Store) SetUnlimitedUsers(ids map[int64]bool) {
+	if s == nil {
+		return
+	}
+	if len(ids) == 0 {
+		s.unlimited = nil
+		return
+	}
+	s.unlimited = make(map[int64]bool, len(ids))
+	for id, ok := range ids {
+		if ok && id > 0 {
+			s.unlimited[id] = true
+		}
+	}
+}
+
+// UnlimitedSubscriptions — этот Telegram id не ограничен MaxSubscriptions.
+func (s *Store) UnlimitedSubscriptions(chatID int64) bool {
+	if s == nil {
+		return false
+	}
+	return s.unlimited[chatID]
 }
 
 // Product — отслеживаемый товар. Один товар общий для всех подписчиков,
@@ -154,7 +181,7 @@ func (s *Store) AddSubscription(ctx context.Context, chatID int64, site, externa
 	if err := tx.QueryRowContext(ctx, sqlCountActiveSubscriptions, userID).Scan(&n); err != nil {
 		return Product{}, false, fmt.Errorf("storage: подсчёт подписок: %w", err)
 	}
-	if n >= MaxSubscriptions {
+	if n >= MaxSubscriptions && !s.UnlimitedSubscriptions(chatID) {
 		return Product{}, false, ErrTooManySubscriptions
 	}
 
