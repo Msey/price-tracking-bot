@@ -5,7 +5,6 @@ package gui
 import (
 	"image/color"
 	"log/slog"
-	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/lxn/walk"
@@ -24,8 +23,6 @@ type board struct {
 	hover        int
 	tipItem      int
 	tipNode      int
-	lastClick    time.Time
-	lastIdx      int
 	tipFont      *walk.Font
 	tipPriceFont *walk.Font
 	icons        map[string]walk.Image
@@ -228,6 +225,15 @@ func (m boardMetrics) chartRect(row walk.Rectangle) walk.Rectangle {
 	}
 }
 
+func (m boardMetrics) headingRect(row walk.Rectangle) walk.Rectangle {
+	return walk.Rectangle{
+		X:      row.X + m.pad,
+		Y:      row.Y + m.pad,
+		Width:  row.Width - m.pad*2,
+		Height: m.titleH + m.metaH,
+	}
+}
+
 func (m boardMetrics) trashRect(row walk.Rectangle) walk.Rectangle {
 	_, trashX := trashLayout(row.Width, m.pad, m.gap, m.trash)
 	chart := m.chartRect(row)
@@ -254,17 +260,39 @@ func (b *board) rowIndex(y int) int {
 	return idx
 }
 
-func (b *board) overTrash(x, y int) bool {
-	idx := b.rowIndex(y)
-	if idx < 0 {
-		return false
-	}
+func (b *board) rowBounds(idx int) (boardMetrics, walk.Rectangle) {
 	width := 0
 	if b.widget != nil {
 		width = b.widget.ClientBoundsPixels().Width
 	}
 	m := b.metrics()
-	row := m.rowRect(width, idx*m.rowH-b.scroll)
+	return m, m.rowRect(width, idx*m.rowH-b.scroll)
+}
+
+func (b *board) overHeading(x, y int) bool {
+	idx := b.rowIndex(y)
+	if idx < 0 {
+		return false
+	}
+	m, row := b.rowBounds(idx)
+	return rectContains(m.headingRect(row), x, y)
+}
+
+func (b *board) overChart(x, y int) bool {
+	idx := b.rowIndex(y)
+	if idx < 0 {
+		return false
+	}
+	m, row := b.rowBounds(idx)
+	return rectContains(m.chartRect(row), x, y)
+}
+
+func (b *board) overTrash(x, y int) bool {
+	idx := b.rowIndex(y)
+	if idx < 0 {
+		return false
+	}
+	m, row := b.rowBounds(idx)
 	hit := m.trashRect(row)
 	pad := walk.IntFrom96DPI(4, m.dpi)
 	hit.X -= pad
@@ -347,6 +375,12 @@ func (b *board) onMouseMove(x, y int) {
 	if trash {
 		node = -1
 	}
+	heading := !trash && b.overHeading(x, y)
+	if trash || heading {
+		b.widget.SetCursor(walk.CursorHand())
+	} else {
+		b.widget.SetCursor(walk.CursorArrow())
+	}
 	if idx == b.hover && node == b.tipNode && idx == b.tipItem && trash == b.hoverTrash {
 		return
 	}
@@ -354,11 +388,6 @@ func (b *board) onMouseMove(x, y int) {
 	b.tipItem = idx
 	b.tipNode = node
 	b.hoverTrash = trash
-	if trash {
-		b.widget.SetCursor(walk.CursorHand())
-	} else {
-		b.widget.SetCursor(walk.CursorArrow())
-	}
 	b.syncTip()
 	b.widget.Invalidate()
 }
@@ -375,13 +404,12 @@ func (b *board) onMouseDown(x, y int, button walk.MouseButton) {
 		if b.onDelete != nil {
 			b.onDelete(b.items[idx])
 		}
-		b.lastIdx = -1
 		return
 	}
-	now := time.Now()
-	if idx == b.lastIdx && now.Sub(b.lastClick) < 400*time.Millisecond && b.onOpen != nil {
+	if b.overChart(x, y) {
+		return
+	}
+	if b.onOpen != nil {
 		b.onOpen(b.items[idx])
 	}
-	b.lastClick = now
-	b.lastIdx = idx
 }

@@ -3,10 +3,69 @@
 package gui
 
 import (
+	"log/slog"
+	"strings"
 	"testing"
 
+	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/lxn/walk"
 )
+
+func TestClipStatusFitsHeader(t *testing.T) {
+	long := "Проверяю ozon · 1/5 · " + strings.Repeat("ковёр шерстяной ", 20)
+	got := clip(long, statusMaxRunes)
+	if n := len([]rune(got)); n > statusMaxRunes {
+		t.Fatalf("статус %d рун, потолок %d — окно снова раздуется", n, statusMaxRunes)
+	}
+}
+
+func TestPerMonitorDPIContext(t *testing.T) {
+	if dpiAwarenessContextPerMonitorV2 != ^uintptr(3) {
+		t.Fatalf("PerMonitorV2 должен быть HANDLE(-4), иначе Windows растянет окно")
+	}
+}
+
+func TestHeadingRectStaysAboveChart(t *testing.T) {
+	m := boardMetrics{dpi: 96, pad: 8, titleH: 16, metaH: 12, chartH: 32, gap: 4, rowH: 74, trash: 20, priceW: 140}
+	row := m.rowRect(400, 0)
+	head := m.headingRect(row)
+	chart := m.chartRect(row)
+	if head.Y+head.Height > chart.Y {
+		t.Fatalf("заголовок наезжает на график: %+v / %+v", head, chart)
+	}
+}
+
+func TestOpenProductUsesBotChrome(t *testing.T) {
+	var opened storage.Product
+	a := &app{
+		log: slog.Default(),
+		openInChrome: func(p storage.Product) {
+			opened = p
+		},
+	}
+	a.openProduct(Item{
+		URL:     "https://www.ozon.ru/t/WcmKNaP",
+		SiteKey: "ozon",
+		City:    "Москва",
+		CityKey: "moscow",
+	})
+	if opened.URL != "https://www.ozon.ru/t/WcmKNaP" || opened.Site != "ozon" || opened.City != "moscow" {
+		t.Fatalf("в Chrome бота ушло %+v", opened)
+	}
+	a.openInChrome = nil
+	a.openProduct(Item{URL: "https://www.ozon.ru/t/WcmKNaP"})
+}
+
+func TestHeaderSetStatusDoesNotNeedWidget(t *testing.T) {
+	var h *headerBand
+	h.setStatus("x")
+	h = &headerBand{}
+	h.setStatus("Проверяю ozon · 1/5 · " + strings.Repeat("ковёр ", 20))
+	if h.status == "" {
+		t.Fatal("статус должен остаться в поле, а не уйти в метку walk")
+	}
+	h.setStatus(h.status)
+}
 
 func TestTipBoxSizeHugsText(t *testing.T) {
 	w, h := tipBoxSize(80, 16, 50, 18, 2, 1)

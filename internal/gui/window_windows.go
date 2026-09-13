@@ -17,6 +17,7 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 	a.distinctBtn = newThemeButton("Distinct: выкл", false, chrome, a.toggleDistinct)
 	refreshBtn := newThemeButton("Обновить", false, chrome, a.refreshClicked)
 	folderBtn := newThemeButton("Папка с данными", false, chrome, a.openDataFolder)
+	a.header = newHeaderBand(t)
 
 	var canvas *walk.CustomWidget
 	if err := (ui.MainWindow{
@@ -35,13 +36,14 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 				MaxSize:    ui.Size{Height: buttonMaxH},
 				Layout:     ui.HBox{MarginsZero: true, Spacing: 12},
 				Children: []ui.Widget{
-					ui.Composite{
-						Background: ui.SolidColorBrush{Color: colorBg},
-						Layout:     ui.VBox{MarginsZero: true, Spacing: 2},
-						Children: []ui.Widget{
-							ui.Label{Text: "Ссылки и графики цен", Font: ui.Font{Family: "Segoe UI", PointSize: 16, Bold: true}, TextColor: colorGold},
-							ui.Label{AssignTo: &a.status, Text: "Загрузка…", TextColor: colorMuted},
-						},
+					ui.CustomWidget{
+						AssignTo:            &a.header.widget,
+						StretchFactor:       1,
+						MinSize:             ui.Size{Width: 80, Height: 52},
+						MaxSize:             ui.Size{Height: 52},
+						InvalidatesOnResize: true,
+						PaintMode:           ui.PaintNoErase,
+						PaintPixels:         a.header.paint,
 					},
 					ui.HSpacer{},
 					a.checkBtn.cell(168),
@@ -66,6 +68,7 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 	keep(disposeFunc(func() { a.board.disposeTip() }))
 	a.checkBtn.attach()
 	a.logBtn.attach()
+	a.distinctBtn.attach()
 	refreshBtn.attach()
 	folderBtn.attach()
 	a.updateCheckUI()

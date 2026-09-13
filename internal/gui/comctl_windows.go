@@ -12,7 +12,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Тот же манифест уходит в ресурс exe через rsrc, поэтому он лежит файлом.
+// Тот же манифест уходит в ресурс exe через rsrc (иконка + dpiAwareness),
+// поэтому он лежит файлом.
 //
 //go:embed app.manifest
 var comctlManifest string

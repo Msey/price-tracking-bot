@@ -48,7 +48,7 @@ func TestGroupRequestsDedupsProduct(t *testing.T) {
 	if got[0].Watchers != 2 {
 		t.Errorf("watchers = %d", got[0].Watchers)
 	}
-	if got[0].Title != "Honor" || got[0].SiteKey != "dns" || got[0].Site != "DNS" || got[0].City != "Москва" {
+	if got[0].Title != "Honor" || got[0].SiteKey != "dns" || got[0].Site != "DNS" || got[0].City != "Москва" || got[0].CityKey != "moscow" {
 		t.Errorf("карточка: %+v", got[0])
 	}
 	if got[0].Price == "—" {

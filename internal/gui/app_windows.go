@@ -24,12 +24,13 @@ type app struct {
 	dataPath      string
 	log           *slog.Logger
 	mw            *walk.MainWindow
-	board         *board
-	status        *walk.Label
-	ni            *trayIcon
+	board  *board
+	header *headerBand
+	ni     *trayIcon
 	items         []Item
 	allowQuit     bool
 	loaded        bool
+	openInChrome  func(storage.Product)
 	checkNow      func()
 	checkBusy     func() bool
 	checkStatus   func() string
@@ -59,6 +60,7 @@ func Run(ctx context.Context, opt Options) error {
 		opt.Log = slog.Default()
 	}
 	setAppUserModelID()
+	enablePerMonitorDPI()
 	if err := enableCommonControlsV6(); err != nil {
 		opt.Log.Warn("не удалось включить Common Controls 6", "error", err)
 	}
@@ -89,6 +91,7 @@ func Run(ctx context.Context, opt Options) error {
 		store:         opt.Store,
 		dataPath:      opt.DataPath,
 		log:           opt.Log,
+		openInChrome:  opt.OpenInChrome,
 		checkNow:      opt.CheckNow,
 		checkBusy:     opt.CheckBusy,
 		checkStatus:   opt.CheckStatus,
@@ -96,7 +99,7 @@ func Run(ctx context.Context, opt Options) error {
 		setLogEnabled: opt.SetLogEnabled,
 		board:         newBoard(th),
 	}
-	a.board.onOpen = func(it Item) { openURL(it.URL) }
+	a.board.onOpen = a.openProduct
 	a.board.onDelete = a.deleteItem
 	a.board.loadImages(keep, opt.Log)
 	keep(disposeFunc(func() { a.board.disposeMeasure() }))
@@ -159,9 +162,7 @@ func (a *app) deleteItem(it Item) {
 		a.onUI(func() {
 			if err != nil {
 				a.log.Error("удаление товара", "error", err)
-				if a.status != nil {
-					_ = a.status.SetText("Не удалось удалить товар")
-				}
+				a.setStatusText("Не удалось удалить товар")
 				return
 			}
 			a.log.Info("товар снят с отслеживания", "product_id", it.ProductID, "removed", n)
@@ -177,9 +178,7 @@ func (a *app) requestCheck() {
 	}
 	a.checkNow()
 	a.updateCheckUI()
-	if a.status != nil {
-		_ = a.status.SetText("Запущена проверка всех цен. Таймер автоцикла сброшен.")
-	}
+	a.setStatusText("Запущена проверка всех цен. Таймер автоцикла сброшен.")
 	// Пункт в трее, в отличие от кнопки, не гаснет на время проверки,
 	// поэтому сторож заводится только один.
 	if a.watching.CompareAndSwap(false, true) {
@@ -354,6 +353,21 @@ func (a *app) openDataFolder() {
 		return
 	}
 	_ = exec.Command(systemExe("explorer.exe"), filepath.Dir(abs)).Start()
+}
+
+// openProduct открывает карточку тем же Chrome, что и замер. В системный
+// браузер отсюда не ходим: rundll32 берёт личный профиль пользователя.
+func (a *app) openProduct(it Item) {
+	if a.openInChrome == nil {
+		a.log.Warn("карточку открывает только Chrome бота, обработчик не задан")
+		return
+	}
+	city := it.CityKey
+	if city == "" {
+		city = it.City
+	}
+	a.log.Info("открываю карточку в Chrome бота", "site", it.SiteKey, "url", it.URL)
+	a.openInChrome(storage.Product{URL: it.URL, Site: it.SiteKey, City: city})
 }
 
 func openURL(raw string) {

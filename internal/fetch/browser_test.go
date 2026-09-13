@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
 func TestNewBrowserUsesAbsoluteProfile(t *testing.T) {
@@ -302,6 +304,12 @@ func TestStampManifestBumpsVersion(t *testing.T) {
 	if !strings.Contains(string(got), `"path": "rules.json"`) && !strings.Contains(string(got), `"path":"rules.json"`) {
 		t.Fatal("потеряли rules.json")
 	}
+}
+
+func TestShowWithoutChromeDoesNotPanic(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir(), ChromePath: t.TempDir()})
+	defer b.Close()
+	b.Show(storage.Product{URL: "https://www.ozon.ru/t/WcmKNaP", Site: "ozon"})
 }
 
 func TestWaitJobSendsCloseWhenIdle(t *testing.T) {

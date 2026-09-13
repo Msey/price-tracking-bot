@@ -88,6 +88,38 @@ func (b *Browser) SetOnChallenge(fn func(string)) {
 	b.setOnChallenge(fn)
 }
 
+// Show открывает карточку тем же путём, что и замер: Chrome бота и
+// задача расширению. В личный браузер не ходим. Вкладку после открытия
+// не закрываем — человек её смотрит.
+func (b *Browser) Show(p storage.Product) {
+	if strings.TrimSpace(p.URL) == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.log.Info("открываю карточку", "site", p.Site, "url", p.URL)
+	j := &extJob{
+		url:  p.URL,
+		site: p.Site,
+		city: p.City,
+		bits: make(chan pageBits, 8),
+	}
+	b.job.Store(j)
+	defer b.job.CompareAndSwap(j, nil)
+	if err := b.ensureLocked(p.URL); err != nil {
+		b.log.Warn("карточку не открыл", "url", p.URL, "error", err)
+		return
+	}
+	b.poke()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && !j.sent.Load() {
+		if b.chromeDead.Load() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // Close гасит сервер и Chrome. Сначала обрывается ожидание страницы:
 // проверка держит mu до конца таймаута, и без этого выход из бота вставал
 // бы на минуту.

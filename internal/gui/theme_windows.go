@@ -24,9 +24,10 @@ var (
 // столько, сколько окно, и освобождаются через keep конструктора. Внутри
 // одни дескрипторы, поэтому theme передаётся значением.
 type theme struct {
-	titleFont *walk.Font
-	metaFont  *walk.Font
-	priceFont *walk.Font
+	headingFont *walk.Font
+	titleFont   *walk.Font
+	metaFont    *walk.Font
+	priceFont   *walk.Font
 
 	bg     *walk.SolidColorBrush
 	row    *walk.SolidColorBrush
@@ -53,6 +54,7 @@ type theme struct {
 func newTheme(keep func(walk.Disposable)) (theme, error) {
 	g := gdiPool{keep: keep}
 	var t theme
+	t.headingFont = g.font(16, walk.FontBold)
 	t.titleFont = g.font(10, walk.FontBold)
 	t.metaFont = g.font(8, 0)
 	t.priceFont = g.font(11, walk.FontBold)

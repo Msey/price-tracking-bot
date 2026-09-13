@@ -19,6 +19,7 @@ type Item struct {
 	SiteKey   string
 	Site      string
 	City      string
+	CityKey   string
 	Price     string
 	Status    string
 	Checked   string
@@ -56,6 +57,7 @@ func (it Item) same(other Item) bool {
 		it.SiteKey != other.SiteKey ||
 		it.Site != other.Site ||
 		it.City != other.City ||
+		it.CityKey != other.CityKey ||
 		it.Price != other.Price ||
 		it.Status != other.Status ||
 		it.Checked != other.Checked ||
@@ -149,6 +151,7 @@ func itemFromRequest(req storage.Request) Item {
 		SiteKey:   req.Product.Site,
 		Site:      sites.Site(req.Product.Site).Title(),
 		City:      view.CityTitle(req.Product.City),
+		CityKey:   req.Product.City,
 		Price:     price,
 		Status:    status,
 		Checked:   checked,

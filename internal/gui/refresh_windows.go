@@ -81,9 +81,7 @@ func (a *app) unchanged(ctx context.Context) bool {
 func (a *app) apply(items []Item, err error, notify bool) {
 	if err != nil {
 		a.log.Error("список товаров для окна", "error", err)
-		if a.status != nil {
-			_ = a.status.SetText("Не удалось прочитать базу")
-		}
+		a.setStatusText("Не удалось прочитать базу")
 		return
 	}
 	if a.loaded && notify && a.ni != nil {
@@ -102,11 +100,11 @@ func (a *app) apply(items []Item, err error, notify bool) {
 }
 
 func (a *app) updateStatus() {
-	if a.status == nil {
+	if a.header == nil {
 		return
 	}
 	if msg := a.checkMessage(); msg != "" {
-		_ = a.status.SetText(msg)
+		a.setStatusText(msg)
 		a.noteCaptcha(msg)
 		if a.ni != nil {
 			_ = a.ni.setToolTip(a.tooltipText())
@@ -115,17 +113,28 @@ func (a *app) updateStatus() {
 	}
 	n := len(a.items)
 	if a.checkRunning() {
-		_ = a.status.SetText("Идёт проверка цен · " +
+		a.setStatusText("Идёт проверка цен · " +
 			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
 			" · автоцикл начнётся заново после неё")
 	} else {
-		_ = a.status.SetText("Работает в фоне · " +
+		a.setStatusText("Работает в фоне · " +
 			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
 			" в списке · закрытие окна прячет в трей")
 	}
 	if a.ni != nil {
 		_ = a.ni.setToolTip(a.tooltipText())
 	}
+}
+
+// statusMaxRunes — потолок подсказки в трее. Шапка рисует статус сама
+// и обрезает многоточием по ширине колонки, без пересчёта рамы.
+const statusMaxRunes = 70
+
+func (a *app) setStatusText(s string) {
+	if a.header == nil {
+		return
+	}
+	a.header.setStatus(s)
 }
 
 func (a *app) tooltipText() string {

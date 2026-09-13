@@ -137,6 +137,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 			Log:           log,
 			StartHidden:   startHiddenFromArgs(os.Args[1:]),
 			BotUsername:   bot.Username(),
+			OpenInChrome:  func(p storage.Product) { go browser.Show(p) },
 			CheckNow:      tr.RequestCheck,
 			CheckBusy:     tr.Busy,
 			CheckStatus:   func() string { return statusLine(bot, tr) },

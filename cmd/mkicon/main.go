@@ -3,7 +3,7 @@
 // чтобы иконка была видна в проводнике и в диспетчере задач.
 //
 //	go run ./cmd/mkicon
-//	go run github.com/akavel/rsrc@v0.10.2 -ico assets/app.ico -manifest assets/app.manifest -arch amd64 -o cmd/bot/rsrc_windows_amd64.syso
+//	go run github.com/akavel/rsrc@v0.10.2 -ico assets/app.ico -manifest internal/gui/app.manifest -arch amd64 -o cmd/bot/rsrc_windows_amd64.syso
 package main
 
 import (
