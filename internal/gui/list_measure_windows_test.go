@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/lxn/walk"
@@ -54,6 +55,32 @@ func TestOpenProductUsesBotChrome(t *testing.T) {
 	}
 	a.openInChrome = nil
 	a.openProduct(Item{URL: "https://www.ozon.ru/t/WcmKNaP"})
+}
+
+func TestTipDoubleClickOpensItem(t *testing.T) {
+	var got Item
+	b := &board{onOpen: func(it Item) { got = it }, hover: -1, tipItem: -1, tipNode: -1}
+	b.setItems([]Item{{URL: "https://www.ozon.ru/t/WcmKNaP", Title: "TV"}})
+	b.tipItem, b.tipNode = 0, 0
+	b.onTipMouseDown(walk.LeftButton)
+	if got.URL != "" {
+		t.Fatal("один клик по тултипу не должен открывать карточку")
+	}
+	b.tipClick = time.Now().Add(-100 * time.Millisecond)
+	b.onTipMouseDown(walk.LeftButton)
+	if got.URL != "https://www.ozon.ru/t/WcmKNaP" {
+		t.Fatalf("даблклик по тултипу: %+v", got)
+	}
+}
+
+func TestOpenCurrentUsesHoveredRow(t *testing.T) {
+	var got Item
+	b := &board{onOpen: func(it Item) { got = it }, hover: 1, tipItem: -1, tipNode: -1}
+	b.setItems([]Item{{URL: "https://a"}, {URL: "https://b"}})
+	b.openCurrent()
+	if got.URL != "https://b" {
+		t.Fatalf("без узла должна открыться строка под курсором: %+v", got)
+	}
 }
 
 func TestHeaderSetStatusDoesNotNeedWidget(t *testing.T) {

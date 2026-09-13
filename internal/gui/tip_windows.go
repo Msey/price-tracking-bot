@@ -3,6 +3,9 @@
 package gui
 
 import (
+	"sync"
+	"syscall"
+
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/lxn/walk"
 	"github.com/lxn/win"
@@ -51,9 +54,14 @@ func (b *board) createTip(parent *walk.CustomWidget) {
 	b.tipHost = host
 	b.tipFace = face
 	b.forwardTipInput(host)
+	b.catchTipDoubleClick(face)
+	face.SetCursor(walk.CursorHand())
 }
 
 func (b *board) disposeTip() {
+	if b.tipFace != nil {
+		forgetTipClicks(b.tipFace.Handle())
+	}
 	if b.tipHost != nil {
 		b.tipHost.Dispose()
 		b.tipHost = nil
@@ -70,17 +78,69 @@ func (b *board) disposeTip() {
 }
 
 func (b *board) forwardTipInput(host *walk.Composite) {
-	host.MouseMove().Attach(func(x, y int, _ walk.MouseButton) {
-		r := host.BoundsPixels()
-		b.onMouseMove(r.X+x, r.Y+y)
-	})
-	host.MouseDown().Attach(func(x, y int, button walk.MouseButton) {
-		r := host.BoundsPixels()
-		b.onMouseDown(r.X+x, r.Y+y, button)
+	// Движение с тултипа в список не переводим: координаты попадают
+	// в заголовок строки, узел сбрасывается и рамка гаснет под курсором.
+	host.MouseDown().Attach(func(_ int, _ int, button walk.MouseButton) {
+		b.onTipMouseDown(button)
 	})
 	host.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
 		b.onWheel(walk.MouseWheelEventDelta(button))
 	})
+	if b.tipFace == nil {
+		return
+	}
+	b.tipFace.MouseDown().Attach(func(_ int, _ int, button walk.MouseButton) {
+		b.onTipMouseDown(button)
+	})
+	b.tipFace.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
+		b.onWheel(walk.MouseWheelEventDelta(button))
+	})
+}
+
+var (
+	tipBoards sync.Map
+	tipPrev   sync.Map
+	tipProcCB = syscall.NewCallback(tipWndProc)
+)
+
+func (b *board) catchTipDoubleClick(w *walk.CustomWidget) {
+	if b == nil || w == nil {
+		return
+	}
+	hwnd := w.Handle()
+	if hwnd == 0 {
+		return
+	}
+	tipBoards.Store(hwnd, b)
+	if prev := win.SetWindowLongPtr(hwnd, win.GWLP_WNDPROC, tipProcCB); prev != 0 {
+		tipPrev.Store(hwnd, prev)
+	}
+}
+
+func forgetTipClicks(hwnd win.HWND) {
+	if hwnd == 0 {
+		return
+	}
+	if prev, ok := tipPrev.Load(hwnd); ok {
+		win.SetWindowLongPtr(hwnd, win.GWLP_WNDPROC, prev.(uintptr))
+		tipPrev.Delete(hwnd)
+	}
+	tipBoards.Delete(hwnd)
+}
+
+func tipWndProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) uintptr {
+	if msg == win.WM_LBUTTONDBLCLK {
+		if v, ok := tipBoards.Load(hwnd); ok {
+			v.(*board).openCurrent()
+		}
+	}
+	if msg == win.WM_NCDESTROY {
+		forgetTipClicks(hwnd)
+	}
+	if prev, ok := tipPrev.Load(hwnd); ok {
+		return win.CallWindowProc(prev.(uintptr), hwnd, msg, wParam, lParam)
+	}
+	return win.DefWindowProc(hwnd, msg, wParam, lParam)
 }
 
 func (b *board) paintTipFace(canvas *walk.Canvas, _ walk.Rectangle) error {

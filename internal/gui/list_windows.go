@@ -5,6 +5,7 @@ package gui
 import (
 	"image/color"
 	"log/slog"
+	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/lxn/walk"
@@ -31,6 +32,7 @@ type board struct {
 	onOpen       func(Item)
 	onDelete     func(Item)
 	hoverTrash   bool
+	tipClick     time.Time
 	// spark/wpts/curve живут между кадрами: Invalidate при движении мыши
 	// иначе выделял бы новый срез на каждую видимую строку.
 	spark  []point
@@ -412,4 +414,33 @@ func (b *board) onMouseDown(x, y int, button walk.MouseButton) {
 	if b.onOpen != nil {
 		b.onOpen(b.items[idx])
 	}
+}
+
+func (b *board) openCurrent() {
+	if b == nil || b.onOpen == nil {
+		return
+	}
+	idx := b.tipItem
+	if idx < 0 {
+		idx = b.hover
+	}
+	if idx < 0 || idx >= len(b.items) {
+		return
+	}
+	b.onOpen(b.items[idx])
+}
+
+const tipDoubleClick = 500 * time.Millisecond
+
+func (b *board) onTipMouseDown(button walk.MouseButton) {
+	if b == nil || button != walk.LeftButton {
+		return
+	}
+	now := time.Now()
+	if !b.tipClick.IsZero() && now.Sub(b.tipClick) < tipDoubleClick {
+		b.tipClick = time.Time{}
+		b.openCurrent()
+		return
+	}
+	b.tipClick = now
 }
