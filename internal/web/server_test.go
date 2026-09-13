@@ -21,10 +21,18 @@ func testStore(t *testing.T) *storage.Store {
 	return s
 }
 
+// localRequest — запрос от браузера на локальной машине. Handler смотрит на
+// Host, поэтому в тестах он тоже должен быть loopback.
+func localRequest(method, target string) *http.Request {
+	r := httptest.NewRequest(method, target, nil)
+	r.Host = "127.0.0.1:8080"
+	return r
+}
+
 func TestIndexEmpty(t *testing.T) {
 	srv := New(testStore(t), "127.0.0.1:0", nil)
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.Handler().ServeHTTP(rec, localRequest(http.MethodGet, "/"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d", rec.Code)
 	}
@@ -67,7 +75,7 @@ func TestIndexListsRequests(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	New(store, "127.0.0.1:0", nil).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	New(store, "127.0.0.1:0", nil).Handler().ServeHTTP(rec, localRequest(http.MethodGet, "/"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("код %d", rec.Code)
 	}
@@ -86,7 +94,7 @@ func TestIndexShowsYandexMarketIcon(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	New(store, "127.0.0.1:0", nil).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	New(store, "127.0.0.1:0", nil).Handler().ServeHTTP(rec, localRequest(http.MethodGet, "/"))
 	body := rec.Body.String()
 	if !strings.Contains(body, "Яндекс.Маркет") {
 		t.Fatal("нет названия магазина")
@@ -98,9 +106,35 @@ func TestIndexShowsYandexMarketIcon(t *testing.T) {
 
 func TestIndexNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
-	New(testStore(t), "127.0.0.1:0", nil).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	New(testStore(t), "127.0.0.1:0", nil).Handler().ServeHTTP(rec, localRequest(http.MethodGet, "/nope"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("код %d", rec.Code)
+	}
+}
+
+// DNS rebinding: чужое имя, разрешённое в 127.0.0.1, читать заявки не должно.
+func TestIndexRejectsForeignHost(t *testing.T) {
+	for _, host := range []string{"example.com", "attacker.test:8080", "192.168.1.10:8080"} {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = host
+		New(testStore(t), "127.0.0.1:0", nil).Handler().ServeHTTP(rec, r)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("Host %q: код %d, ожидался 403", host, rec.Code)
+		}
+	}
+}
+
+func TestLoopbackHost(t *testing.T) {
+	for _, host := range []string{"127.0.0.1:8080", "localhost:8080", "localhost", "[::1]:8080", "127.0.0.1"} {
+		if !loopbackHost(host) {
+			t.Errorf("%s должен приниматься", host)
+		}
+	}
+	for _, host := range []string{"", "example.com", "example.com:8080", "10.0.0.5:8080", "bot.local"} {
+		if loopbackHost(host) {
+			t.Errorf("%s должен отклоняться", host)
+		}
 	}
 }
 

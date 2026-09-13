@@ -14,7 +14,24 @@ const (
 	ozonBankGrace = 8 * time.Second
 )
 
-func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBits, parse func(pageBits) (Snapshot, error), onHuman func(pageBits)) (Snapshot, error) {
+// pagePolicy — чему верить на странице магазина. Хранится в настройках
+// магазина, а не приходит со страницы.
+type pagePolicy struct {
+	// skipLDJSON — не брать цену из разметки, только из карточки.
+	skipLDJSON bool
+	// bankGrace — сколько ждать нужный ценник, прежде чем всё-таки
+	// согласиться на цену из разметки.
+	bankGrace time.Duration
+}
+
+func (p pagePolicy) grace() time.Duration {
+	if p.bankGrace > 0 {
+		return p.bankGrace
+	}
+	return ozonBankGrace
+}
+
+func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBits, parse func(pageBits) (Snapshot, error), onHuman func(pageBits), pol pagePolicy) (Snapshot, error) {
 	if timeout <= 0 {
 		timeout = pageWait
 	}
@@ -37,10 +54,10 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			if hardBlocked(last) {
 				return Snapshot{}, challengeWithTitle(last.Title)
 			}
-			if last.SkipLDJSON && bankUntil.IsZero() {
-				bankUntil = time.Now().Add(bankGraceOf(last))
+			if pol.skipLDJSON && bankUntil.IsZero() {
+				bankUntil = time.Now().Add(pol.grace())
 			}
-			snap, err := parsePriceBits(last, parse, bankUntil)
+			snap, err := parsePriceBits(last, parse, bankUntil, pol)
 			if err == nil {
 				return snap, nil
 			}
@@ -56,8 +73,8 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 			}
 		case <-poll.C:
 			resetTimer(poll, pollEvery)
-			if last.SkipLDJSON && !bankUntil.IsZero() {
-				snap, err := parsePriceBits(last, parse, bankUntil)
+			if pol.skipLDJSON && !bankUntil.IsZero() {
+				snap, err := parsePriceBits(last, parse, bankUntil, pol)
 				if err == nil {
 					return snap, nil
 				}
@@ -76,20 +93,16 @@ func waitForBits(ctx context.Context, timeout time.Duration, bits <-chan pageBit
 	}
 }
 
-func bankGraceOf(p pageBits) time.Duration {
-	if p.BankGraceMs > 0 {
-		return time.Duration(p.BankGraceMs) * time.Millisecond
-	}
-	return ozonBankGrace
-}
-
-func parsePriceBits(p pageBits, parse func(pageBits) (Snapshot, error), bankUntil time.Time) (Snapshot, error) {
+// parsePriceBits читает снимок по правилам магазина. Флаг ставится здесь,
+// а не берётся из ответа страницы.
+func parsePriceBits(p pageBits, parse func(pageBits) (Snapshot, error), bankUntil time.Time, pol pagePolicy) (Snapshot, error) {
+	p.skipLDJSON = pol.skipLDJSON
 	snap, err := parse(p)
 	if err == nil {
 		return snap, nil
 	}
-	if p.SkipLDJSON && !bankUntil.IsZero() && !time.Now().Before(bankUntil) {
-		p.SkipLDJSON = false
+	if pol.skipLDJSON && !bankUntil.IsZero() && !time.Now().Before(bankUntil) {
+		p.skipLDJSON = false
 		return parse(p)
 	}
 	return snap, err

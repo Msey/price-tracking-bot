@@ -9,7 +9,7 @@ import (
 
 func killChromeWithProfile(string) {}
 
-func startChrome(string, string, string, string, string) (*exec.Cmd, error) {
+func startChrome(string, string, string, string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("запуск Chrome только на Windows")
 }
 

@@ -143,6 +143,11 @@ func (s *Store) LastSnapshots(ctx context.Context, productID int64, n int) ([]Sn
 
 const defaultHistoryLimit = 90
 
+// historyIDBatch — сколько товаров кладём в один IN (...). У SQLite предел
+// на число параметров запроса (по умолчанию 999), и на большом списке
+// подписок запрос иначе просто не собрался бы.
+const historyIDBatch = 500
+
 // Histories возвращает последние limit замеров по каждому товару,
 // уже в порядке от старых к новым — так удобнее рисовать график.
 func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (map[int64][]SnapshotRow, error) {
@@ -153,7 +158,19 @@ func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (m
 	if limit < 1 {
 		limit = defaultHistoryLimit
 	}
+	for start := 0; start < len(productIDs); start += historyIDBatch {
+		end := start + historyIDBatch
+		if end > len(productIDs) {
+			end = len(productIDs)
+		}
+		if err := s.appendHistories(ctx, out, productIDs[start:end], limit); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
 
+func (s *Store) appendHistories(ctx context.Context, out map[int64][]SnapshotRow, productIDs []int64, limit int) error {
 	args := make([]any, 0, len(productIDs)+1)
 	for _, id := range productIDs {
 		args = append(args, id)
@@ -163,7 +180,7 @@ func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (m
 	q := fmt.Sprintf(sqlHistories, sqlPlaceholders(len(productIDs)))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("storage: истории цен: %w", err)
+		return fmt.Errorf("storage: истории цен: %w", err)
 	}
 	defer rows.Close()
 
@@ -172,38 +189,89 @@ func (s *Store) Histories(ctx context.Context, productIDs []int64, limit int) (m
 		var r SnapshotRow
 		var avail int
 		if err := rows.Scan(&id, &r.PriceKopecks, &avail, &r.CheckedAt); err != nil {
-			return nil, fmt.Errorf("storage: чтение истории: %w", err)
+			return fmt.Errorf("storage: чтение истории: %w", err)
 		}
 		r.Available = avail != 0
 		out[id] = append(out[id], r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: обход историй: %w", err)
+		return fmt.Errorf("storage: обход историй: %w", err)
+	}
+	return nil
+}
+
+const (
+	// HistoryKeepPerProduct — сколько замеров хранить на товар. Ozon пишет
+	// около 72 строк в сутки, так что этого хватает примерно на пять дней
+	// подробной истории при 90 точках на графике.
+	HistoryKeepPerProduct = 400
+	// FetchErrorsKeepFor — сколько хранить записи о сбоях загрузки.
+	FetchErrorsKeepFor = 30 * 24 * time.Hour
+)
+
+// Pruned — сколько строк убрала чистка.
+type Pruned struct {
+	Snapshots int64
+	Errors    int64
+}
+
+// Prune убирает лишнюю историю. Без неё price_history растёт навсегда:
+// каждый замер — отдельная строка, а окно и уведомления смотрят только на
+// хвост. Свежие HistoryKeepPerProduct замеров на товар остаются на месте.
+func (s *Store) Prune(ctx context.Context, keepPerProduct int, errorsOlderThan time.Time) (Pruned, error) {
+	if keepPerProduct < 1 {
+		keepPerProduct = HistoryKeepPerProduct
+	}
+	var out Pruned
+
+	res, err := s.db.ExecContext(ctx, sqlPruneHistory, keepPerProduct)
+	if err != nil {
+		return out, fmt.Errorf("storage: чистка истории цен: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil {
+		out.Snapshots = n
+	}
+
+	if !errorsOlderThan.IsZero() {
+		res, err = s.db.ExecContext(ctx, sqlPruneFetchErrors, formatTime(errorsOlderThan))
+		if err != nil {
+			return out, fmt.Errorf("storage: чистка ошибок загрузки: %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			out.Errors = n
+		}
 	}
 	return out, nil
 }
 
-// NotifiedState — последняя цена, о которой уже сообщили подписчикам.
-type NotifiedState struct {
-	Kopecks   int64
-	Available bool
-	Set       bool
+// Fingerprint — отпечаток того, что показывает окно. Меняется при новой
+// подписке, снятии подписки, новом замере и новой ошибке загрузки.
+// Имя товара обновляется в той же транзакции, что и замер, поэтому
+// отдельно его не считаем.
+type Fingerprint struct {
+	ActiveSubs    int64
+	MaxSubID      int64
+	Snapshots     int64
+	MaxSnapshotID int64
+	MaxErrorID    int64
 }
 
-// Notified возвращает базу сравнения для товара.
-func (s *Store) Notified(ctx context.Context, productID int64) (NotifiedState, error) {
-	var kopecks, avail sql.NullInt64
-	err := s.db.QueryRowContext(ctx, sqlNotified, productID).Scan(&kopecks, &avail)
+// Fingerprint читает отпечаток одним запросом по агрегатам. Окно опрашивает
+// его каждые несколько секунд и лезет за списком и историями только когда
+// отпечаток изменился.
+func (s *Store) Fingerprint(ctx context.Context) (Fingerprint, error) {
+	var f Fingerprint
+	err := s.db.QueryRowContext(ctx, sqlFingerprint).Scan(
+		&f.ActiveSubs, &f.MaxSubID, &f.Snapshots, &f.MaxSnapshotID, &f.MaxErrorID)
 	if err != nil {
-		return NotifiedState{}, fmt.Errorf("storage: last_notified товара %d: %w", productID, err)
+		return Fingerprint{}, fmt.Errorf("storage: отпечаток данных: %w", err)
 	}
-	if !kopecks.Valid {
-		return NotifiedState{}, nil
-	}
-	return NotifiedState{Kopecks: kopecks.Int64, Available: avail.Int64 != 0, Set: true}, nil
+	return f, nil
 }
 
-// MarkNotified запоминает, что об этом замере уже написали.
+// MarkNotified запоминает, что об этом замере уже написали. Читателя у этих
+// столбцов нет: решение об уведомлении принимается по истории цен, а запись
+// остаётся следом в базе.
 func (s *Store) MarkNotified(ctx context.Context, productID, kopecks int64, available bool) error {
 	avail := 0
 	if available {

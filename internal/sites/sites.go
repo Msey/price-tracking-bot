@@ -199,6 +199,12 @@ func parseOzon(u *url.URL) (Ref, error) {
 	return Ref{Site: Ozon, ExternalKey: key, URL: canonical}, nil
 }
 
+// ByHost — магазин по хосту ссылки. Сравнение точное, поэтому
+// ozon.ru.example.com магазином не считается.
+func ByHost(host string) (Site, bool) {
+	return siteByHost(strings.ToLower(strings.TrimSpace(host)))
+}
+
 func siteByHost(host string) (Site, bool) {
 	switch host {
 	case "dns-shop.ru", "www.dns-shop.ru":

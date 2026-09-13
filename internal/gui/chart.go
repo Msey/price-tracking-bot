@@ -212,16 +212,57 @@ func sampleChartLabel(samples []Sample, i int) bool {
 	return samples[i].Price != samples[i-1].Price
 }
 
-// firstPriceLabel — писать цену только на первом узле группы с одной
-// ценой. Пока цена не сменилась, остальные точки остаются без подписи.
-func firstPriceLabel(prices []int64, i int) bool {
-	if i < 0 || i >= len(prices) {
-		return false
+// collapseSameChartNodes схлопывает подряд идущие замеры с той же
+// ценой и наличием в один узел — последний в плато, чтобы подсказка
+// показывала свежую дату проверки. Когда схлопывать нечего, вход
+// возвращается как есть, без копии.
+func collapseSameChartNodes(in []Sample) []Sample {
+	if !hasSameChartNodes(in) {
+		return in
 	}
-	if i == 0 {
-		return true
+	out := make([]Sample, 0, len(in))
+	for _, s := range in {
+		if n := len(out); n > 0 && out[n-1].Price == s.Price && out[n-1].Available == s.Available {
+			out[n-1] = s
+			continue
+		}
+		out = append(out, s)
 	}
-	return prices[i] != prices[i-1]
+	return out
+}
+
+func hasSameChartNodes(in []Sample) bool {
+	for i := 1; i < len(in); i++ {
+		if in[i].Price == in[i-1].Price && in[i].Available == in[i-1].Available {
+			return true
+		}
+	}
+	return false
+}
+
+// chartSeries — узлы одной строки в том виде, в котором их рисует график.
+// Цены лежат отдельным срезом, потому что по ним считается раскладка и
+// цвет сегмента.
+type chartSeries struct {
+	prices  []int64
+	samples []Sample
+}
+
+// chartSeriesOf собирает узлы строки. distinct оставляет только смену цены
+// или наличия. Считается на смену списка и тумблера, а не на каждую
+// перерисовку: paint вызывается на любом движении мыши.
+func chartSeriesOf(samples []Sample, distinct bool) chartSeries {
+	if distinct {
+		samples = collapseSameChartNodes(samples)
+	}
+	if len(samples) == 0 {
+		return chartSeries{}
+	}
+	prices := make([]int64, len(samples))
+	for i, s := range samples {
+		prices[i] = s.Price
+	}
+	return chartSeries{prices: prices, samples: samples}
 }
 
 // trashLayout — график слева, урна справа: между ними зазор, у правого

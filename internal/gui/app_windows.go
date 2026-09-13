@@ -4,7 +4,6 @@ package gui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,67 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
 	"github.com/lxn/walk"
-	ui "github.com/lxn/walk/declarative"
 	"github.com/lxn/win"
-	"golang.org/x/sys/windows"
 )
-
-const (
-	mutexName = `Local\PriceTrackingBotGUI`
-	eventName = `Local\PriceTrackingBotGUIShow`
-)
-
-var (
-	instanceMu windows.Handle
-	showEvent  windows.Handle
-)
-
-func Available() bool { return true }
-
-func ActivateExisting() bool {
-	evName, err := windows.UTF16PtrFromString(eventName)
-	if err != nil {
-		return false
-	}
-	ev, err := windows.CreateEvent(nil, 0, 0, evName)
-	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return false
-	}
-	muName, err := windows.UTF16PtrFromString(mutexName)
-	if err != nil {
-		windows.CloseHandle(ev)
-		return false
-	}
-	mu, err := windows.CreateMutex(nil, false, muName)
-	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		_ = windows.SetEvent(ev)
-		windows.CloseHandle(mu)
-		windows.CloseHandle(ev)
-		return true
-	}
-	if err != nil {
-		windows.CloseHandle(ev)
-		return false
-	}
-	instanceMu = mu
-	showEvent = ev
-	return false
-}
-
-// releaseInstance отпускает мьютекс единственного экземпляра. showEvent не
-// закрывается: на нём висит watchShowRequests, и закрытие дескриптора
-// из-под ожидающего потока — неопределённое поведение. Дескриптор
-// освободит сама система при выходе процесса, то есть ровно тогда же.
-func releaseInstance() {
-	if instanceMu != 0 {
-		windows.CloseHandle(instanceMu)
-		instanceMu = 0
-	}
-}
 
 type app struct {
 	store         *storage.Store
@@ -92,6 +35,7 @@ type app struct {
 	checkStatus   func() string
 	checkBtn      *themeButton
 	logBtn        *themeButton
+	distinctBtn   *themeButton
 	logCmd        uint16
 	logEnabled    func() bool
 	setLogEnabled func(bool)
@@ -102,7 +46,11 @@ type app struct {
 	// щелчок по пункту в трее добавлял бы ещё один опрос базы каждые 750 мс.
 	watching atomic.Bool
 	// loading — чтение базы уже идёт, второе в очередь не ставим.
-	loading  atomic.Bool
+	loading atomic.Bool
+	// mark и haveMark трогает только горутина чтения, и она одна:
+	// вход в неё стоит за CAS на loading, он же и синхронизирует память.
+	mark     storage.Fingerprint
+	haveMark bool
 	checkCtx context.Context
 }
 
@@ -127,109 +75,10 @@ func Run(ctx context.Context, opt Options) error {
 	keep := func(d walk.Disposable) { owned = append(owned, d) }
 	defer releaseInstance()
 
-	titleFont, err := walk.NewFont("Segoe UI", 10, walk.FontBold)
+	th, err := newTheme(keep)
 	if err != nil {
 		return err
 	}
-	keep(titleFont)
-	metaFont, err := walk.NewFont("Segoe UI", 8, 0)
-	if err != nil {
-		return err
-	}
-	keep(metaFont)
-	priceFont, err := walk.NewFont("Segoe UI", 11, walk.FontBold)
-	if err != nil {
-		return err
-	}
-	keep(priceFont)
-
-	bg, err := walk.NewSolidColorBrush(walk.RGB(22, 20, 16))
-	if err != nil {
-		return err
-	}
-	keep(bg)
-	row, err := walk.NewSolidColorBrush(walk.RGB(33, 28, 22))
-	if err != nil {
-		return err
-	}
-	keep(row)
-	rowSel, err := walk.NewSolidColorBrush(walk.RGB(48, 40, 30))
-	if err != nil {
-		return err
-	}
-	keep(rowSel)
-	accent, err := walk.NewSolidColorBrush(walk.RGB(226, 182, 87))
-	if err != nil {
-		return err
-	}
-	keep(accent)
-	gridPen, err := walk.NewCosmeticPen(walk.PenSolid, walk.RGB(58, 50, 40))
-	if err != nil {
-		return err
-	}
-	keep(gridPen)
-	goldHot, err := walk.NewSolidColorBrush(walk.RGB(236, 196, 104))
-	if err != nil {
-		return err
-	}
-	keep(goldHot)
-	goldPress, err := walk.NewSolidColorBrush(walk.RGB(196, 154, 64))
-	if err != nil {
-		return err
-	}
-	keep(goldPress)
-	mutedFill, err := walk.NewSolidColorBrush(walk.RGB(90, 76, 52))
-	if err != nil {
-		return err
-	}
-	keep(mutedFill)
-	frame, err := walk.NewSolidColorBrush(walk.RGB(58, 50, 40))
-	if err != nil {
-		return err
-	}
-	keep(frame)
-	goldBrush, err := walk.NewSolidColorBrush(walk.RGB(226, 182, 87))
-	if err != nil {
-		return err
-	}
-	keep(goldBrush)
-	goldPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, goldBrush)
-	if err != nil {
-		return err
-	}
-	keep(goldPen)
-	// Для покупателя рост цены — плохо (красный), падение — хорошо (зелёный).
-	downBrush, err := walk.NewSolidColorBrush(walk.RGB(160, 222, 140))
-	if err != nil {
-		return err
-	}
-	keep(downBrush)
-	downPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, downBrush)
-	if err != nil {
-		return err
-	}
-	keep(downPen)
-	upBrush, err := walk.NewSolidColorBrush(walk.RGB(232, 86, 74))
-	if err != nil {
-		return err
-	}
-	keep(upBrush)
-	upPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, upBrush)
-	if err != nil {
-		return err
-	}
-	keep(upPen)
-	missBrush, err := walk.NewSolidColorBrush(walk.RGB(148, 140, 128))
-	if err != nil {
-		return err
-	}
-	keep(missBrush)
-	missPen, err := walk.NewGeometricPen(walk.PenSolid|walk.PenCapRound|walk.PenJoinRound, 2, missBrush)
-	if err != nil {
-		return err
-	}
-	keep(missPen)
-
 	icon, err := walk.NewIconFromImage(trayImage())
 	if err != nil {
 		return err
@@ -245,146 +94,16 @@ func Run(ctx context.Context, opt Options) error {
 		checkStatus:   opt.CheckStatus,
 		logEnabled:    opt.LogEnabled,
 		setLogEnabled: opt.SetLogEnabled,
-		board: &board{
-			titleFont: titleFont,
-			metaFont:  metaFont,
-			priceFont: priceFont,
-			bg:        bg,
-			row:       row,
-			rowHot:    rowSel,
-			accent:    accent,
-			upBrush:   upBrush,
-			downBrush: downBrush,
-			missBrush: missBrush,
-			goldPen:   goldPen,
-			upPen:     upPen,
-			downPen:   downPen,
-			missPen:   missPen,
-			gridPen:   gridPen,
-			hover:     -1,
-			tipItem:   -1,
-			tipNode:   -1,
-		},
+		board:         newBoard(th),
 	}
 	a.board.onOpen = func(it Item) { openURL(it.URL) }
 	a.board.onDelete = a.deleteItem
-	idleTrash, err := walk.NewBitmapFromImage(trashImage(64, trashMuted))
-	if err != nil {
-		opt.Log.Warn("иконка корзины", "error", err)
-	} else {
-		keep(idleTrash)
-		a.board.trash = idleTrash
-	}
-	hotTrash, err := walk.NewBitmapFromImage(trashImage(64, iconGold))
-	if err != nil {
-		opt.Log.Warn("иконка корзины", "error", err)
-	} else {
-		keep(hotTrash)
-		a.board.trashHot = hotTrash
-	}
-	a.board.icons = map[string]walk.Image{}
-	for _, site := range sites.SitesWithIcons() {
-		img := siteImage(site)
-		if img == nil {
-			continue
-		}
-		bmp, err := walk.NewBitmapFromImage(img)
-		if err != nil {
-			opt.Log.Warn("иконка магазина", "site", site, "error", err)
-			continue
-		}
-		a.board.icons[string(site)] = bmp
-		keep(bmp)
-	}
+	a.board.loadImages(keep, opt.Log)
 	keep(disposeFunc(func() { a.board.disposeMeasure() }))
 
-	muted := walk.RGB(154, 141, 122)
-	gold := walk.RGB(226, 182, 87)
-	var canvas *walk.CustomWidget
-	chrome := &buttonChrome{
-		font:      titleFont,
-		row:       row,
-		rowHot:    rowSel,
-		accent:    accent,
-		goldHot:   goldHot,
-		goldPress: goldPress,
-		mutedFill: mutedFill,
-		frame:     frame,
-	}
-	a.checkBtn = newThemeButton("Проверить цены", true, chrome, a.requestCheck)
-	a.logBtn = newThemeButton("Логи: выкл", false, chrome, a.toggleDiagLog)
-	refreshBtn := newThemeButton("Обновить", false, chrome, a.refreshClicked)
-	folderBtn := newThemeButton("Папка с данными", false, chrome, a.openDataFolder)
-
-	if err := (ui.MainWindow{
-		AssignTo:   &a.mw,
-		Title:      "Трекинг цен",
-		Icon:       icon,
-		MinSize:    ui.Size{Width: 860, Height: 560},
-		Size:       ui.Size{Width: 1040, Height: 760},
-		Font:       ui.Font{Family: "Segoe UI", PointSize: 10},
-		Background: ui.SolidColorBrush{Color: walk.RGB(22, 20, 16)},
-		Layout:     ui.VBox{Margins: ui.Margins{Left: 16, Top: 14, Right: 16, Bottom: 14}, Spacing: 10},
-		Children: []ui.Widget{
-			ui.Composite{
-				Background: ui.SolidColorBrush{Color: walk.RGB(22, 20, 16)},
-				MinSize:    ui.Size{Height: 52},
-				MaxSize:    ui.Size{Height: buttonMaxH},
-				Layout:     ui.HBox{MarginsZero: true, Spacing: 12},
-				Children: []ui.Widget{
-					ui.Composite{
-						Background: ui.SolidColorBrush{Color: walk.RGB(22, 20, 16)},
-						Layout:     ui.VBox{MarginsZero: true, Spacing: 2},
-						Children: []ui.Widget{
-							ui.Label{Text: "Ссылки и графики цен", Font: ui.Font{Family: "Segoe UI", PointSize: 16, Bold: true}, TextColor: gold},
-							ui.Label{AssignTo: &a.status, Text: "Загрузка…", TextColor: muted},
-						},
-					},
-					ui.HSpacer{},
-					a.checkBtn.cell(168),
-					a.logBtn.cell(118),
-					refreshBtn.cell(108),
-					folderBtn.cell(156),
-				},
-			},
-			ui.CustomWidget{
-				AssignTo:            &canvas,
-				StretchFactor:       1,
-				InvalidatesOnResize: true,
-				PaintMode:           ui.PaintBuffered,
-				PaintPixels:         a.board.paint,
-			},
-		},
-	}).Create(); err != nil {
+	if err := a.buildWindow(th, icon, keep); err != nil {
 		return err
 	}
-	a.board.attach(canvas)
-	keep(disposeFunc(func() { a.board.disposeTip() }))
-	a.checkBtn.attach()
-	a.logBtn.attach()
-	refreshBtn.attach()
-	folderBtn.attach()
-	a.updateCheckUI()
-	if a.setLogEnabled == nil && a.logBtn != nil {
-		a.logBtn.SetVisible(false)
-	}
-	win.SetMenu(a.mw.Handle(), 0)
-	if tb := a.mw.ToolBar(); tb != nil {
-		tb.SetVisible(false)
-	}
-
-	a.mw.Closing().Attach(func(canceled *bool, _ walk.CloseReason) {
-		if a.allowQuit {
-			return
-		}
-		*canceled = true
-		a.hideToTray()
-	})
-	a.mw.SizeChanged().Attach(func() {
-		if win.IsIconic(a.mw.Handle()) {
-			a.hideToTray()
-		}
-	})
 
 	ni, err := newTrayIcon(a.mw.Handle(), windowTrayIcon(a.mw.Handle()), a.showWindow)
 	if err != nil {
@@ -396,36 +115,7 @@ func Run(ctx context.Context, opt Options) error {
 	a.ni = ni
 	_ = ni.setToolTip("Трекинг цен")
 	_ = ni.setVisible(true)
-	if _, err := ni.addAction("Открыть окно", a.showWindow); err != nil {
-		return err
-	}
-	if link := telegramBotURL(opt.BotUsername); link != "" {
-		if _, err := ni.addAction("Открыть в Telegram", func() { openURL(link) }); err != nil {
-			return err
-		}
-	}
-	if a.checkNow != nil {
-		if _, err := ni.addAction("Проверить цены", a.requestCheck); err != nil {
-			return err
-		}
-	}
-	if _, err := ni.addAction("Обновить список", a.refreshClicked); err != nil {
-		return err
-	}
-	if _, err := ni.addAction("Папка с данными", a.openDataFolder); err != nil {
-		return err
-	}
-	if a.setLogEnabled != nil {
-		id, err := ni.addAction("Логи: выкл", a.toggleDiagLog)
-		if err != nil {
-			return err
-		}
-		a.logCmd = id
-	}
-	if err := ni.addSeparator(); err != nil {
-		return err
-	}
-	if _, err := ni.addAction("Выход", a.quit); err != nil {
+	if err := a.buildTray(opt); err != nil {
 		return err
 	}
 
@@ -436,6 +126,7 @@ func Run(ctx context.Context, opt Options) error {
 	a.checkCtx = ctx
 	a.refresh(false)
 	a.syncDiagLogUI()
+	a.syncDistinctUI()
 	a.log.Info("графический интерфейс", "tray", true, "hidden", opt.StartHidden)
 	if opt.StartHidden {
 		a.hideToTray()
@@ -447,11 +138,6 @@ func Run(ctx context.Context, opt Options) error {
 	a.closed.Store(true)
 	return nil
 }
-
-// disposeFunc подгоняет под walk.Disposable то, чей Dispose возвращает ошибку.
-type disposeFunc func()
-
-func (f disposeFunc) Dispose() { f() }
 
 func (a *app) deleteItem(it Item) {
 	a.log.Info("удаление товара из окна", "product_id", it.ProductID, "title", it.Title)
@@ -504,6 +190,25 @@ func (a *app) requestCheck() {
 func (a *app) refreshClicked() {
 	a.log.Info("обновление списка в окне")
 	a.refresh(false)
+}
+
+func (a *app) toggleDistinct() {
+	on := a.board == nil || !a.board.distinct
+	if a.board != nil {
+		a.board.setDistinct(on)
+	}
+	a.syncDistinctUI()
+	a.log.Info("узлы графика", "distinct", on)
+}
+
+func (a *app) syncDistinctUI() {
+	text := "Distinct: выкл"
+	if a.board != nil && a.board.distinct {
+		text = "Distinct: вкл"
+	}
+	if a.distinctBtn != nil {
+		_ = a.distinctBtn.SetText(text)
+	}
 }
 
 func (a *app) toggleDiagLog() {
@@ -591,18 +296,6 @@ func (a *app) checkMessage() string {
 	return strings.TrimSpace(a.checkStatus())
 }
 
-func (a *app) noteCaptcha(msg string) {
-	if !strings.Contains(strings.ToLower(msg), "капч") {
-		a.captchaTold = false
-		return
-	}
-	if a.captchaTold || a.ni == nil {
-		return
-	}
-	a.captchaTold = true
-	_ = a.ni.showInfo("Нужна капча", "Откройте окно Chrome и пройдите проверку. Бот подождёт несколько минут.")
-}
-
 func (a *app) updateCheckUI() {
 	if a.checkBtn == nil {
 		return
@@ -648,146 +341,6 @@ func (a *app) quit() {
 func (a *app) watchCancel(ctx context.Context) {
 	<-ctx.Done()
 	a.onUI(a.quit)
-}
-
-func (a *app) watchShowRequests() {
-	if showEvent == 0 {
-		return
-	}
-	for {
-		s, err := windows.WaitForSingleObject(showEvent, windows.INFINITE)
-		if err != nil || s != windows.WAIT_OBJECT_0 {
-			return
-		}
-		a.showWindow()
-	}
-}
-
-func (a *app) poll(ctx context.Context) {
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	var lastRefresh time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			a.onUI(func() {
-				a.updateCheckUI()
-				a.updateStatus()
-			})
-			every := 10 * time.Second
-			if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
-				every = 4 * time.Second
-			}
-			if lastRefresh.IsZero() || time.Since(lastRefresh) >= every {
-				lastRefresh = time.Now()
-				a.refresh(true)
-			}
-		}
-	}
-}
-
-// refresh перечитывает базу и обновляет окно. Чтение уходит в отдельную
-// горутину: запрос может занять до пяти секунд, и делать его в потоке окна
-// значит подвесить интерфейс на всё это время.
-func (a *app) refresh(notify bool) {
-	if a.store == nil || a.closed.Load() {
-		return
-	}
-	if !a.loading.CompareAndSwap(false, true) {
-		return
-	}
-	go func() {
-		defer a.loading.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		items, err := loadItems(ctx, a.store)
-		a.onUI(func() { a.apply(items, err, notify) })
-	}()
-}
-
-func (a *app) apply(items []Item, err error, notify bool) {
-	if err != nil {
-		a.log.Error("список товаров для окна", "error", err)
-		if a.status != nil {
-			_ = a.status.SetText("Не удалось прочитать базу")
-		}
-		return
-	}
-	if a.loaded && notify && a.ni != nil {
-		a.announce("Новая ссылка", titlesOf(newProducts(a.items, items)), 120)
-		a.announce("Цена изменилась", priceChanges(a.items, items), 180)
-	}
-	a.items = items
-	if a.board != nil {
-		a.board.setItems(items)
-	}
-	a.loaded = true
-	a.updateStatus()
-	if a.ni != nil {
-		_ = a.ni.setToolTip(a.tooltipText())
-	}
-}
-
-func (a *app) updateStatus() {
-	if a.status == nil {
-		return
-	}
-	if msg := a.checkMessage(); msg != "" {
-		_ = a.status.SetText(msg)
-		a.noteCaptcha(msg)
-		if a.ni != nil {
-			_ = a.ni.setToolTip(a.tooltipText())
-		}
-		return
-	}
-	n := len(a.items)
-	if a.checkRunning() {
-		_ = a.status.SetText("Идёт проверка цен · " +
-			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
-			" · автоцикл начнётся заново после неё")
-	} else {
-		_ = a.status.SetText("Работает в фоне · " +
-			fmt.Sprintf("%d %s", n, view.RuPlural(n, "товар", "товара", "товаров")) +
-			" в списке · закрытие окна прячет в трей")
-	}
-	if a.ni != nil {
-		_ = a.ni.setToolTip(a.tooltipText())
-	}
-}
-
-func (a *app) tooltipText() string {
-	n := view.RuPlural(len(a.items), "товар", "товара", "товаров")
-	if msg := a.checkMessage(); msg != "" {
-		return "Трекинг цен · " + clip(msg, 80)
-	}
-	return "Трекинг цен · " + n
-}
-
-// maxBalloons — сколько всплывающих подсказок показать за один заход.
-// Полная проверка может сдвинуть десятки цен, и каждая подсказка висит
-// около десяти секунд: без предела они забьют угол экрана на минуты.
-const maxBalloons = 3
-
-func (a *app) announce(title string, lines []string, limit int) {
-	for i, line := range lines {
-		if i == maxBalloons {
-			rest := len(lines) - maxBalloons
-			_ = a.ni.showInfo(title, fmt.Sprintf("и ещё %d %s", rest,
-				view.RuPlural(rest, "изменение", "изменения", "изменений")))
-			return
-		}
-		_ = a.ni.showInfo(title, clip(line, limit))
-	}
-}
-
-func titlesOf(items []Item) []string {
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		out = append(out, it.Title)
-	}
-	return out
 }
 
 func (a *app) openDataFolder() {

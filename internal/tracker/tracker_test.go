@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +103,51 @@ func (f *missingDNS) Fetch(context.Context, storage.Product) (fetch.Snapshot, er
 }
 
 func (f *missingDNS) Paused() (time.Time, string, bool) { return time.Time{}, "", false }
+
+type deadNotify struct{ n int }
+
+func (f *deadNotify) Notify(context.Context, int64, string) error {
+	f.n++
+	return errors.New("forbidden: bot was blocked by the user")
+}
+
+// Подписчик, заблокировавший бота, не должен превращать удачный замер
+// в ошибку проверки: цена уже записана, остальным она ушла.
+func TestCheckOneSurvivesUndeliveredNotification(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "blocked.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	notes := &deadNotify{}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{}, nil)
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.price = 9000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatalf("недоставленное уведомление не должно валить проверку: %v", err)
+	}
+	if notes.n != 1 {
+		t.Fatalf("попыток отправки %d, ожидалась одна", notes.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || hist[0].PriceKopecks != 9000 {
+		t.Fatalf("замер должен остаться в истории: %+v", hist)
+	}
+}
 
 func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "miss.db"))

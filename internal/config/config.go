@@ -31,7 +31,6 @@ type Config struct {
 	CircuitCooldown time.Duration
 	ChromeProfile   string
 	ChromePath      string
-	ChromeHeadless  bool
 	DefaultCity     string
 	// AllowedUsers пуст, если доступ открыт всем.
 	AllowedUsers map[int64]bool
@@ -95,7 +94,6 @@ func Load() (Config, error) {
 
 	cfg.ChromeProfile = envOr("CHROME_PROFILE", "data/chrome-plain")
 	cfg.ChromePath = os.Getenv("CHROME_PATH")
-	cfg.ChromeHeadless = envOr("CHROME_HEADLESS", "0") == "1"
 	cfg.UIAddr = strings.TrimSpace(envOr("UI_ADDR", "127.0.0.1:8080"))
 	if strings.EqualFold(cfg.UIAddr, "off") || cfg.UIAddr == "-" {
 		cfg.UIAddr = ""

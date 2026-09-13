@@ -73,7 +73,7 @@ func installUnpackedToProfile(exe, profile, extDir string) (string, error) {
 	}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if profileMentionsExtension(profile, extDir) {
+		if profileMentionsExtension(profile) {
 			break
 		}
 		time.Sleep(250 * time.Millisecond)

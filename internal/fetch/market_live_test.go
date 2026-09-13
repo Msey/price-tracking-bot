@@ -24,7 +24,6 @@ func TestLiveMarketFetch(t *testing.T) {
 	m := NewMarket(ShopOptions{
 		ProfileDir:      filepath.Join(t.TempDir(), "profile"),
 		ChromePath:      chrome,
-		Headless:        false,
 		CircuitCooldown: 45 * time.Minute,
 	})
 	defer m.Close()

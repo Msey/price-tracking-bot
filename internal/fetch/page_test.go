@@ -13,7 +13,7 @@ func TestWaitForBitsTakesParsedPrice(t *testing.T) {
 	ch <- pageBits{CSSPrice: "1 990 ₽", Name: "Герметик"}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil)
+	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil, pagePolicy{})
 	if err != nil {
 		t.Fatalf("waitForBits: %v", err)
 	}
@@ -22,20 +22,22 @@ func TestWaitForBitsTakesParsedPrice(t *testing.T) {
 	}
 }
 
+// Ценник с банком есть только в карточке, поэтому до него разметку не берём.
+// Что именно приходит со страницы, на это правило не влияет.
 func TestWaitForBitsIgnoresOzonLDJSONUntilBankPrice(t *testing.T) {
 	ch := make(chan pageBits, 2)
 	ch <- pageBits{
-		SkipLDJSON: true,
-		LDJSON:     []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
-		Title:      "Ковер",
+		LDJSON: []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+		Title:  "Ковер",
 	}
 	go func() {
 		time.Sleep(40 * time.Millisecond)
-		ch <- pageBits{SkipLDJSON: true, CSSPrice: "5 105 ₽", Title: "Ковер"}
+		ch <- pageBits{CSSPrice: "5 105 ₽", Title: "Ковер"}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil)
+	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil,
+		pagePolicy{skipLDJSON: true, bankGrace: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,24 +48,19 @@ func TestWaitForBitsIgnoresOzonLDJSONUntilBankPrice(t *testing.T) {
 
 func TestWaitForBitsOzonFallsBackToLDJSONAfterGrace(t *testing.T) {
 	ch := make(chan pageBits, 2)
-	ch <- pageBits{
-		SkipLDJSON:  true,
-		BankGraceMs: 20,
-		LDJSON:      []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
-		Title:       "Ковер",
+	bits := pageBits{
+		LDJSON: []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
+		Title:  "Ковер",
 	}
+	ch <- bits
 	go func() {
 		time.Sleep(40 * time.Millisecond)
-		ch <- pageBits{
-			SkipLDJSON:  true,
-			BankGraceMs: 20,
-			LDJSON:      []string{`{"@type":"Product","offers":{"price":"5920","priceCurrency":"RUB"}}`},
-			Title:       "Ковер",
-		}
+		ch <- bits
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil)
+	snap, err := waitForBits(ctx, time.Second, ch, parseVisiblePriceBits, nil,
+		pagePolicy{skipLDJSON: true, bankGrace: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +72,7 @@ func TestWaitForBitsOzonFallsBackToLDJSONAfterGrace(t *testing.T) {
 func TestWaitForBitsTimeoutNoPrice(t *testing.T) {
 	ch := make(chan pageBits)
 	ctx := context.Background()
-	_, err := waitForBits(ctx, 20*time.Millisecond, ch, parseVisiblePriceBits, nil)
+	_, err := waitForBits(ctx, 20*time.Millisecond, ch, parseVisiblePriceBits, nil, pagePolicy{})
 	if !errors.Is(err, ErrNoPrice) {
 		t.Fatalf("ожидался ErrNoPrice, получено %v", err)
 	}
@@ -95,7 +92,7 @@ func TestWaitForBits403StopsImmediately(t *testing.T) {
 	ch := make(chan pageBits, 1)
 	ch <- pageBits{QRATOR: true, Title: "HTTP 403"}
 	start := time.Now()
-	_, err := waitForBits(context.Background(), time.Second, ch, parseBits, nil)
+	_, err := waitForBits(context.Background(), time.Second, ch, parseBits, nil, pagePolicy{})
 	if !errors.Is(err, ErrChallenge) {
 		t.Fatalf("ожидался ErrChallenge, получено %v", err)
 	}
@@ -113,7 +110,7 @@ func TestWaitForBitsQRATORScriptWaitsForPrice(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	snap, err := waitForBits(ctx, time.Second, ch, parseBits, nil)
+	snap, err := waitForBits(ctx, time.Second, ch, parseBits, nil, pagePolicy{})
 	if err != nil {
 		t.Fatalf("waitForBits: %v", err)
 	}
@@ -130,7 +127,7 @@ func TestWaitForBitsManySnapshotsReuseTimer(t *testing.T) {
 	ch <- pageBits{CSSPrice: "100 ₽", Title: "Товар"}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	snap, err := waitForBits(ctx, time.Second, ch, parseBits, nil)
+	snap, err := waitForBits(ctx, time.Second, ch, parseBits, nil, pagePolicy{})
 	if err != nil {
 		t.Fatalf("waitForBits: %v", err)
 	}

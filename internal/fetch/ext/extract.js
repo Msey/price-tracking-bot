@@ -16,7 +16,21 @@ function ldjson() {
 
 // title + URL + видимый текст. Полный innerHTML не берём: на карточке
 // это мегабайты и задерживает съём цены.
+//
+// innerText считает раскладку страницы, а report дёргается на каждую
+// мутацию DOM, поэтому результат держим коротким кэшем. textContent был бы
+// дешевле, но тянет за собой содержимое script-узлов: на Ozon это большие
+// JSON, они забили бы лимит в 8000 символов и заглушка «нет соединения»
+// перестала бы находиться.
+var hayText = '';
+var hayAt = 0;
+var hayURL = '';
+
 function haystack() {
+  var now = Date.now();
+  if (hayText && hayURL === location.href && now - hayAt < 500) {
+    return hayText;
+  }
   var t = (document.title || '') + '\n' + (location.href || '');
   var root = document.body || document.documentElement;
   if (root) {
@@ -26,6 +40,9 @@ function haystack() {
     }
     t += '\n' + text;
   }
+  hayText = t;
+  hayAt = now;
+  hayURL = location.href;
   return t;
 }
 
@@ -241,8 +258,20 @@ function ozonBankPrice() {
 }
 
 var ozonWidgetSince = 0;
+var ozonWidgetURL = '';
+
+// Между карточками Ozon ходит без перезагрузки, а content script остаётся
+// тот же. Без сброса отсрочка отсчитывалась бы от прошлого товара, и на
+// новой карточке первый же крупный ценник ушёл бы как цена с банком.
+function ozonResetOnNav() {
+  if (ozonWidgetURL !== location.href) {
+    ozonWidgetURL = location.href;
+    ozonWidgetSince = 0;
+  }
+}
 
 function extractOzon() {
+  ozonResetOnNav();
   var title = document.title || '';
   var body = haystack();
   var low = body.toLowerCase();
@@ -270,8 +299,6 @@ function extractOzon() {
     blocked: blocked,
     ldjson: ldjson(),
     cssPrice: css,
-    skipLdjson: true,
-    bankGraceMs: 8000,
     name: h1 ? (h1.textContent || '').trim() : '',
     title: title
   };
@@ -293,10 +320,14 @@ function extract() {
 
 var lastKey = null;
 var scheduled = false;
+var poll = 0;
 
 function bitsKey(bits) {
   var ld = bits.ldjson && bits.ldjson.length ? bits.ldjson[0].slice(0, 80) : '';
-  return (bits.cssPrice || '') + '\0' + ld + '\0' + (bits.title || '') + '\0'
+  // Адрес в ключе: после перехода на другую карточку снимок должен уйти
+  // заново, даже если цена и заголовок совпали.
+  return (location.href || '') + '\0' + (bits.cssPrice || '') + '\0' + ld + '\0'
+    + (bits.title || '') + '\0'
     + !!bits.challenge + !!bits.blocked + !!bits.qrator;
 }
 
@@ -328,6 +359,19 @@ function report() {
       body: JSON.stringify(payload)
     }).catch(function () {});
   }
+  // Цена ушла — секундный опрос больше не нужен: изменения на странице
+  // по-прежнему приносит MutationObserver, а повторные снимки с тем же
+  // ключом всё равно отбрасываются.
+  if (bits.cssPrice) {
+    stopPoll();
+  }
+}
+
+function stopPoll() {
+  if (poll) {
+    clearInterval(poll);
+    poll = 0;
+  }
 }
 
 function schedule() {
@@ -347,7 +391,7 @@ function start() {
     var obs = new MutationObserver(schedule);
     obs.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   }
-  setInterval(report, 1000);
+  poll = setInterval(report, 1000);
 }
 
 if (document.readyState === 'loading') {

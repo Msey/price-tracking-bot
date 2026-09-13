@@ -9,8 +9,10 @@ import (
 // shoppingChromeArgs — флаги обычного Chrome для карточек магазинов.
 // Здесь не должно быть remote-debugging-pipe/port: Ozon и DNS считают
 // такой процесс ботом (заглушка «нет соединения», QRATOR 403).
-func shoppingChromeArgs(profile, extDir, extID, startURL string) []string {
-	_ = startURL
+//
+// Адреса карточки среди флагов нет: её открывает расширение по задаче
+// от бота. URL в argv живому Chrome этого профиля добавлял бы ещё вкладку.
+func shoppingChromeArgs(profile, extDir, extID string) []string {
 	args := []string{
 		"--user-data-dir=" + profile,
 		"--enable-unsafe-extension-debugging",
@@ -25,8 +27,6 @@ func shoppingChromeArgs(profile, extDir, extID, startURL string) []string {
 	if extID != "" {
 		args = append(args, "--disable-extensions-except="+extID)
 	}
-	// Карточку открывает расширение. URL в argv, если Chrome этого
-	// профиля уже жив, добавляет ещё одну вкладку — так они и копились.
 	return append(args, "about:blank")
 }
 
@@ -54,11 +54,12 @@ func hasRemoteDebugging(args []string) bool {
 	return false
 }
 
-func profileMentionsExtension(profile, extDir string) bool {
+// profileMentionsExtension — расширение уже прописано в профиле. Имя
+// каталога здесь не нужно: в Preferences лежит имя из manifest.json.
+func profileMentionsExtension(profile string) bool {
 	if profile == "" {
 		return false
 	}
-	_ = extDir
 	for _, rel := range []string{
 		filepath.Join("Default", "Preferences"),
 		filepath.Join("Default", "Secure Preferences"),

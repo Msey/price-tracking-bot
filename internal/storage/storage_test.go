@@ -586,6 +586,148 @@ func TestProductsDueSkipsFreshSnapshots(t *testing.T) {
 	}
 }
 
+// Список товаров режется на пачки: у SQLite предел на число параметров,
+// и один большой IN (...) просто не собрался бы.
+func TestHistoriesSplitsBigIDList(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Заведомо несуществующие id, чтобы не столкнуться с настоящим товаром.
+	ids := make([]int64, 0, historyIDBatch*2+3)
+	for i := 0; i < cap(ids); i++ {
+		ids = append(ids, int64(100000+i))
+	}
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordSnapshot(ctx, p.ID, "Товар", 1000, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	ids = append(ids, p.ID)
+
+	hist, err := s.Histories(ctx, ids, 10)
+	if err != nil {
+		t.Fatalf("длинный список товаров: %v", err)
+	}
+	if len(hist[p.ID]) != 1 {
+		t.Fatalf("история товара из последней пачки: %+v", hist[p.ID])
+	}
+}
+
+func TestPruneKeepsFreshHistory(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO price_history (product_id, price_kopecks, checked_at) VALUES (?, ?, ?)`,
+			p.ID, int64(1000+i), fmt.Sprintf("2024-01-%02d 00:00:00", i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordFetchError(ctx, p.ID, "dns", "fetch", "старый сбой"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE fetch_errors SET occurred_at = '2020-01-01 00:00:00'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordFetchError(ctx, p.ID, "dns", "fetch", "свежий сбой"); err != nil {
+		t.Fatal(err)
+	}
+
+	done, err := s.Prune(ctx, 3, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Snapshots != 7 {
+		t.Fatalf("удалено замеров %d, ожидалось 7", done.Snapshots)
+	}
+	if done.Errors != 1 {
+		t.Fatalf("удалено ошибок %d, ожидалась 1", done.Errors)
+	}
+
+	// Остаться должен именно хвост: график после чистки не меняется.
+	left, err := s.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 3 {
+		t.Fatalf("осталось %d замеров, ожидалось 3", len(left))
+	}
+	if left[0].PriceKopecks != 1009 || left[2].PriceKopecks != 1007 {
+		t.Fatalf("осталась не свежая часть истории: %+v", left)
+	}
+}
+
+func TestFingerprintTracksChanges(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	empty, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added == empty {
+		t.Fatal("новая подписка должна менять отпечаток")
+	}
+
+	same, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same != added {
+		t.Fatalf("без изменений отпечаток должен совпадать: %+v и %+v", same, added)
+	}
+
+	if _, err := s.RecordSnapshot(ctx, p.ID, "Товар", 15999900, "RUB", true); err != nil {
+		t.Fatal(err)
+	}
+	withPrice, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withPrice == added {
+		t.Fatal("новый замер должен менять отпечаток")
+	}
+
+	if err := s.RecordFetchError(ctx, p.ID, "dns", "fetch", "сбой"); err != nil {
+		t.Fatal(err)
+	}
+	withErr, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withErr == withPrice {
+		t.Fatal("новая ошибка загрузки должна менять отпечаток")
+	}
+
+	if _, err := s.DeleteSubscription(ctx, chatAlice, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := s.Fingerprint(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gone == withErr {
+		t.Fatal("снятая подписка должна менять отпечаток")
+	}
+}
+
 func TestRecordSnapshotUpdatesName(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

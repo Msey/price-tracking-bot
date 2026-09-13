@@ -2,6 +2,7 @@ package diaglog
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -61,6 +62,37 @@ func TestWithAttrsKeepsTheSameSwitch(t *testing.T) {
 	child.Info("видно")
 	if !strings.Contains(buf.String(), "видно") || !strings.Contains(buf.String(), "dns") {
 		t.Fatalf("дочерний логгер после включения: %s", buf.String())
+	}
+}
+
+func TestHandlerRedactsToken(t *testing.T) {
+	var buf bytes.Buffer
+	sw := &Switch{}
+	log := slog.New(Wrap(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}), sw))
+
+	const token = "bot123456789:AAHfake-Token_Value12345678"
+	log.Error("сбой запроса https://api.telegram.org/"+token+"/sendMessage",
+		"error", errors.New("Post \"https://api.telegram.org/"+token+"/getMe\": timeout"),
+		"url", "https://api.telegram.org/"+token+"/getMe",
+		"chat_id", 42)
+
+	got := buf.String()
+	if strings.Contains(got, token) {
+		t.Fatalf("токен не должен попадать в лог: %s", got)
+	}
+	if !strings.Contains(got, "bot***") {
+		t.Fatalf("ожидалась замена на bot***: %s", got)
+	}
+	if !strings.Contains(got, "chat_id=42") {
+		t.Fatalf("остальные атрибуты должны сохраниться: %s", got)
+	}
+}
+
+func TestRedactLeavesCleanTextAlone(t *testing.T) {
+	for _, s := range []string{"", "price-tracking-bot запущен", "bot без токена", "робот"} {
+		if got := Redact(s); got != s {
+			t.Errorf("Redact(%q) = %q, строку без токена менять нельзя", s, got)
+		}
 	}
 }
 

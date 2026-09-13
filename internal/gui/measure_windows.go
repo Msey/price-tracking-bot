@@ -14,6 +14,12 @@ type textSizeKey struct {
 	text string
 }
 
+// measureCacheMax — потолок кэша размеров текста. Ключ — сама строка, а
+// цены и даты замеров меняются, поэтому без предела кэш растёт всё время
+// работы окна. Размеры считаются заново по мере надобности, так что при
+// переполнении кэш проще сбросить целиком.
+const measureCacheMax = 512
+
 func (b *board) measureLine(font *walk.Font, text string) walk.Rectangle {
 	if font == nil || text == "" {
 		return walk.Rectangle{}
@@ -51,7 +57,10 @@ func (b *board) measureLine(font *walk.Font, text string) walk.Rectangle {
 		sz.Height = 1
 	}
 	if b.measureSize == nil {
-		b.measureSize = make(map[textSizeKey]walk.Rectangle)
+		b.measureSize = make(map[textSizeKey]walk.Rectangle, measureCacheMax)
+	}
+	if len(b.measureSize) >= measureCacheMax {
+		clear(b.measureSize)
 	}
 	b.measureSize[key] = sz
 	return sz

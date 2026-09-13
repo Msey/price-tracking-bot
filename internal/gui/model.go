@@ -23,7 +23,6 @@ type Item struct {
 	Status    string
 	Checked   string
 	Watchers  int
-	Points    []int64
 	Samples   []Sample
 }
 
@@ -88,17 +87,14 @@ func loadItems(ctx context.Context, store *storage.Store) ([]Item, error) {
 	}
 	for i := range grouped {
 		rows := hist[grouped[i].ProductID]
-		pts := make([]int64, 0, len(rows))
 		samples := make([]Sample, 0, len(rows))
 		for _, row := range rows {
 			sample, ok := chartSample(row)
 			if !ok {
 				continue
 			}
-			pts = append(pts, sample.Price)
 			samples = append(samples, sample)
 		}
-		grouped[i].Points = pts
 		grouped[i].Samples = samples
 	}
 	return grouped, nil

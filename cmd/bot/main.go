@@ -41,8 +41,7 @@ func main() {
 func newLogger() (*slog.Logger, *diaglog.Switch, func()) {
 	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
 	logs := &diaglog.Switch{}
-	_ = os.MkdirAll("data", 0o755)
-	f, err := os.OpenFile(filepath.Join("data", "bot.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := openLogFile(filepath.Join("data", "bot.log"), logSizeLimit, logKeep)
 	if err != nil {
 		log := slog.New(diaglog.Wrap(slog.NewTextHandler(os.Stderr, opts), logs))
 		slog.SetDefault(log)
@@ -65,6 +64,10 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 		log.Info("окно уже открыто, активирую существующий процесс")
 		return nil
 	}
+	if len(cfg.AllowedUsers) == 0 {
+		log.Warn("ALLOWED_USERS пуст: боту может писать любой, кто знает его имя. " +
+			"Впишите свой Telegram user id в .env, чтобы закрыть доступ")
+	}
 
 	store, err := storage.Open(cfg.DatabasePath)
 	if err != nil {
@@ -80,7 +83,6 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	browser := fetch.NewBrowser(fetch.BrowserOptions{
 		ProfileDir: cfg.ChromeProfile,
 		ChromePath: cfg.ChromePath,
-		Headless:   cfg.ChromeHeadless,
 		Log:        log,
 	})
 	defer browser.Close()
@@ -110,6 +112,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	}()
 
 	go tr.Run(ctx)
+	go pruneLoop(ctx, store, log)
 	if cfg.UIAddr != "" {
 		web.New(store, cfg.UIAddr, log).Start(ctx)
 	}
@@ -148,6 +151,39 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 	bot.Start(ctx)
 	log.Info("бот остановлен")
 	return nil
+}
+
+// pruneLoop чистит историю при запуске и раз в сутки: замер пишется
+// отдельной строкой на каждую проверку, и без чистки база растёт всё время
+// работы бота.
+func pruneLoop(ctx context.Context, store *storage.Store, log *slog.Logger) {
+	const every = 24 * time.Hour
+	for {
+		prune(ctx, store, log)
+		timer := time.NewTimer(every)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func prune(ctx context.Context, store *storage.Store, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	done, err := store.Prune(ctx, storage.HistoryKeepPerProduct, time.Now().Add(-storage.FetchErrorsKeepFor))
+	if err != nil {
+		log.Warn("чистка базы не удалась", "error", err)
+		return
+	}
+	if done.Snapshots == 0 && done.Errors == 0 {
+		log.Debug("чистить нечего")
+		return
+	}
+	log.Info("база почищена", "snapshots", done.Snapshots, "errors", done.Errors,
+		"keep_per_product", storage.HistoryKeepPerProduct)
 }
 
 func startHiddenFromArgs(args []string) bool {

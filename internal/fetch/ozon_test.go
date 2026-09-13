@@ -43,16 +43,34 @@ func TestParseOzonHTMLPrefersBankHeadline(t *testing.T) {
 	}
 }
 
+// Правило «не верить разметке Ozon» задаётся настройками магазина,
+// а не приходит со страницы.
+func TestNewOzonKeepsBankPricePolicy(t *testing.T) {
+	shop := NewOzon(ShopOptions{ProfileDir: t.TempDir()})
+	defer shop.Close()
+	if !shop.cfg.policy.skipLDJSON {
+		t.Fatal("на Ozon разметка отдаёт цену с другими банками")
+	}
+	if shop.cfg.policy.grace() != ozonBankGrace {
+		t.Fatalf("отсрочка %v", shop.cfg.policy.grace())
+	}
+	market := NewMarket(ShopOptions{ProfileDir: t.TempDir()})
+	defer market.Close()
+	if market.cfg.policy.skipLDJSON {
+		t.Fatal("на Маркете разметка — законный запасной вариант")
+	}
+}
+
 func TestParseVisiblePriceBitsSkipsLDJSON(t *testing.T) {
 	_, err := parseVisiblePriceBits(pageBits{
-		SkipLDJSON: true,
+		skipLDJSON: true,
 		LDJSON:     []string{`{"@type":"Product","name":"Ковер","offers":{"price":"5920","priceCurrency":"RUB"}}`},
 	})
 	if !errors.Is(err, ErrNoPrice) {
 		t.Fatalf("без ценника банка JSON-LD не берём: %v", err)
 	}
 	snap, err := parseVisiblePriceBits(pageBits{
-		SkipLDJSON: true,
+		skipLDJSON: true,
 		CSSPrice:   "5 105 ₽",
 		LDJSON:     []string{`{"@type":"Product","name":"Ковер","offers":{"price":"5920","priceCurrency":"RUB"}}`},
 	})

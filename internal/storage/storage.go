@@ -220,30 +220,7 @@ type Request struct {
 
 // ListAllRequests возвращает все активные заявки, сначала новые.
 func (s *Store) ListAllRequests(ctx context.Context) ([]Request, error) {
-	rows, err := s.db.QueryContext(ctx, sqlListAllRequests)
-	if err != nil {
-		return nil, fmt.Errorf("storage: список заявок: %w", err)
-	}
-	defer rows.Close()
-
-	var out []Request
-	for rows.Next() {
-		var r Request
-		if err := rows.Scan(
-			&r.SubscriptionID, &r.CreatedAt, &r.ChatID,
-			&r.Product.ID, &r.Product.Site, &r.Product.ExternalKey,
-			&r.Product.URL, &r.Product.Name, &r.Product.City,
-			&r.LastPriceKopecks, &r.LastAvailable, &r.LastCheckedAt,
-			&r.LastErrorKind, &r.LastErrorAt,
-		); err != nil {
-			return nil, fmt.Errorf("storage: чтение заявки: %w", err)
-		}
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: обход заявок: %w", err)
-	}
-	return out, nil
+	return s.scanRequests(ctx, "список заявок", sqlRequestsAll)
 }
 
 // ListUserRequests — активные заявки одного пользователя, в том же порядке, что /list.
@@ -251,9 +228,15 @@ func (s *Store) ListUserRequests(ctx context.Context, chatID int64) ([]Request, 
 	if chatID <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, sqlListUserRequests, chatID)
+	return s.scanRequests(ctx, "заявки пользователя", sqlRequestsUser, chatID)
+}
+
+// scanRequests читает заявки одним и тем же набором столбцов: список для
+// окна и список одного чата отличаются только отбором и порядком.
+func (s *Store) scanRequests(ctx context.Context, what, tail string, args ...any) ([]Request, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(sqlListRequests, tail), args...)
 	if err != nil {
-		return nil, fmt.Errorf("storage: заявки пользователя %d: %w", chatID, err)
+		return nil, fmt.Errorf("storage: %s: %w", what, err)
 	}
 	defer rows.Close()
 
@@ -267,12 +250,12 @@ func (s *Store) ListUserRequests(ctx context.Context, chatID int64) ([]Request, 
 			&r.LastPriceKopecks, &r.LastAvailable, &r.LastCheckedAt,
 			&r.LastErrorKind, &r.LastErrorAt,
 		); err != nil {
-			return nil, fmt.Errorf("storage: чтение заявки пользователя: %w", err)
+			return nil, fmt.Errorf("storage: чтение (%s): %w", what, err)
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: обход заявок пользователя: %w", err)
+		return nil, fmt.Errorf("storage: обход (%s): %w", what, err)
 	}
 	return out, nil
 }

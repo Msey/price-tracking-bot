@@ -182,7 +182,7 @@ func (b *board) tipNeeded() bool {
 	if b.tipItem < 0 || b.tipNode < 0 || b.tipItem >= len(b.items) {
 		return false
 	}
-	return b.tipNode < len(b.items[b.tipItem].Samples)
+	return b.tipNode < len(b.display(b.tipItem).samples)
 }
 
 func (b *board) syncTip() {
@@ -196,7 +196,12 @@ func (b *board) syncTip() {
 	if !b.ensureTip() {
 		return
 	}
-	sample := b.items[b.tipItem].Samples[b.tipNode]
+	samples := b.display(b.tipItem).samples
+	if b.tipNode >= len(samples) {
+		b.hideTip()
+		return
+	}
+	sample := samples[b.tipNode]
 	date := sample.When
 	price := money.FormatKopecks(sample.Price)
 	nx, ny, ok := b.nodePixel(b.tipItem, b.tipNode)
@@ -256,14 +261,14 @@ func (b *board) nodePixel(item, node int) (x, y int, ok bool) {
 	if b.widget == nil || item < 0 || item >= len(b.items) {
 		return
 	}
-	it := b.items[item]
-	if node < 0 || node >= len(it.Points) {
+	prices := b.display(item).prices
+	if node < 0 || node >= len(prices) {
 		return
 	}
 	m := b.metrics()
 	width := b.widget.ClientBoundsPixels().Width
 	chart := m.chartRect(m.rowRect(width, item*m.rowH-b.scroll))
-	pts := sparklineInto(b.spark, chart.Width, chart.Height, it.Points)
+	pts := sparklineInto(b.spark, chart.Width, chart.Height, prices)
 	b.spark = pts
 	if node >= len(pts) {
 		return

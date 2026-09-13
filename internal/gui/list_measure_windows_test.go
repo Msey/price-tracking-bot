@@ -42,7 +42,7 @@ func TestTipNeeded(t *testing.T) {
 	if b.tipNeeded() {
 		t.Fatal("пустой список")
 	}
-	b.items = []Item{{Samples: []Sample{{Price: 100, When: "01.01.26 10:00"}}}}
+	b.setItems([]Item{{Samples: []Sample{{Price: 100, When: "01.01.26 10:00"}}}})
 	b.tipItem, b.tipNode = 0, 0
 	if !b.tipNeeded() {
 		t.Fatal("есть замер")
@@ -53,6 +53,30 @@ func TestTipNeeded(t *testing.T) {
 	}
 	b.tipItem, b.tipNode = -1, -1
 	b.syncTip()
+}
+
+func TestTipNeededDistinct(t *testing.T) {
+	var b board
+	b.distinct = true
+	b.setItems([]Item{{Samples: []Sample{
+		{Price: 100, When: "a"},
+		{Price: 100, When: "b"},
+		{Price: 90, When: "c"},
+	}}})
+	b.tipItem, b.tipNode = 0, 1
+	if !b.tipNeeded() {
+		t.Fatal("второй distinct-узел есть")
+	}
+	b.tipNode = 2
+	if b.tipNeeded() {
+		t.Fatal("плато схлопнуто, третьего узла нет")
+	}
+	// Тумблер пересобирает серию: плато разворачивается обратно.
+	b.setDistinct(false)
+	b.tipItem, b.tipNode = 0, 2
+	if !b.tipNeeded() {
+		t.Fatal("без distinct должны быть все три узла")
+	}
 }
 
 func TestHideTipNil(t *testing.T) {

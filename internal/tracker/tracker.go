@@ -11,8 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Msey/price-tracking-bot/internal/diaglog"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/sites"
+	"github.com/Msey/price-tracking-bot/internal/wait"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
 )
@@ -314,11 +316,11 @@ func (t *Tracker) fetchList(ctx context.Context, site string, skipGap bool, due 
 			return
 		}
 		if !skipGap && (i > 0 || !t.lastHit.IsZero()) {
-			wait := t.cfg.FetchGap - time.Since(t.lastHit)
-			if wait > 0 {
+			gap := t.cfg.FetchGap - time.Since(t.lastHit)
+			if gap > 0 {
 				t.setStatus("%s", p.Title())
-				t.setUntil(time.Now().Add(wait), "gap")
-				ok := sleepCtx(ctx, wait)
+				t.setUntil(time.Now().Add(gap), "gap")
+				ok := wait.Sleep(ctx, gap)
 				t.clearUntil()
 				if !ok {
 					return
@@ -329,16 +331,20 @@ func (t *Tracker) fetchList(ctx context.Context, site string, skipGap bool, due 
 		t.setStatus("Проверяю %s · %d/%d · %s", site, i+1, len(due), p.Title())
 		t.log.Info("проверяю товар", "site", site, "n", i+1, "of", len(due), "product", p.ID, "url", p.URL)
 		if err := t.checkOne(ctx, p); err != nil {
+			// Текст ошибки уходит в базу и в строку статуса, а сетевая
+			// ошибка telebot несёт в себе токен бота.
+			msg := diaglog.Redact(err.Error())
 			t.log.Warn("проверка не удалась", "site", site, "product", p.ID, "url", p.URL, "error", err)
-			t.setStatus("Ошибка %s · %s", site, clipStatus(err.Error(), 180))
+			t.setStatus("Ошибка %s · %s", site, diaglog.Clip(msg, 180))
 			kind := "fetch"
 			if errors.Is(err, fetch.ErrChallenge) {
 				kind = "challenge"
-				_ = t.store.RecordFetchError(ctx, p.ID, p.Site, kind, err.Error())
+			}
+			_ = t.store.RecordFetchError(ctx, p.ID, p.Site, kind, msg)
+			if kind == "challenge" {
 				t.log.Warn("цикл сайта остановлен из-за челленджа", "site", site)
 				return
 			}
-			_ = t.store.RecordFetchError(ctx, p.ID, p.Site, kind, err.Error())
 		}
 	}
 }
@@ -416,14 +422,16 @@ func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) e
 		return err
 	}
 	msg := view.PriceChange(p, d.Previous, d.Current)
-	var first error
+	// Недоставленное уведомление не отменяет замер: цена уже в базе, а
+	// один заблокировавший бота подписчик иначе помечал бы всю проверку
+	// ошибкой и писал строку в fetch_errors.
 	for _, chatID := range chats {
 		t.log.Info("отправляю уведомление", "chat_id", chatID, "product", p.ID)
-		if err := t.notify.Notify(ctx, chatID, msg); err != nil && first == nil {
-			first = err
+		if err := t.notify.Notify(ctx, chatID, msg); err != nil {
+			t.log.Warn("уведомление не доставлено", "chat_id", chatID, "product", p.ID, "error", err)
 		}
 	}
-	return first
+	return nil
 }
 
 func siteCheckInterval(site string) time.Duration {
@@ -478,28 +486,3 @@ func formatCountdown(d time.Duration) string {
 	}
 }
 
-func clipStatus(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if n <= 1 {
-		return ""
-	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}

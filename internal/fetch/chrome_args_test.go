@@ -8,7 +8,7 @@ import (
 )
 
 func TestShoppingChromeArgsHaveNoDebugger(t *testing.T) {
-	args := shoppingChromeArgs(`C:\data\chrome-plain`, `C:\ext\chrome-ext`, "abcdefghijklmnopabcdefghijklmnop", "https://www.ozon.ru/product/1")
+	args := shoppingChromeArgs(`C:\data\chrome-plain`, `C:\ext\chrome-ext`, "abcdefghijklmnopabcdefghijklmnop")
 	if hasRemoteDebugging(args) {
 		t.Fatalf("shopping Chrome не должен быть с CDP: %v", args)
 	}
@@ -59,15 +59,14 @@ func TestProfileMentionsExtension(t *testing.T) {
 	if err := os.MkdirAll(pref, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ext := `C:\Users\v.s\AppData\Local\price-tracking-bot\chrome-ext`
-	if profileMentionsExtension(dir, ext) {
+	if profileMentionsExtension(dir) {
 		t.Fatal("пустой профиль не содержит расширение")
 	}
 	raw := []byte(`{"extensions":{"settings":{"id":{"path":"C:\\Users\\v.s\\AppData\\Local\\price-tracking-bot\\chrome-ext","manifest":{"name":"Price tracking helper"}}}}}`)
 	if err := os.WriteFile(filepath.Join(pref, "Preferences"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !profileMentionsExtension(dir, ext) {
+	if !profileMentionsExtension(dir) {
 		t.Fatal("не нашли расширение в Preferences")
 	}
 }
@@ -82,7 +81,7 @@ func TestProfileMentionsExtensionByPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(pref, "Secure Preferences"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !profileMentionsExtension(dir, "") {
+	if !profileMentionsExtension(dir) {
 		t.Fatal("не нашли путь chrome-ext в Secure Preferences")
 	}
 }

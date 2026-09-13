@@ -29,21 +29,23 @@ type Snapshot struct {
 }
 
 type pageBits struct {
-	QRATOR      bool     `json:"qrator"`
-	Challenge   bool     `json:"challenge"`
-	Blocked     bool     `json:"blocked"`
-	LDJSON      []string `json:"ldjson"`
-	CSSPrice    string   `json:"cssPrice"`
-	Name        string   `json:"name"`
-	Title       string   `json:"title"`
-	SkipLDJSON  bool     `json:"skipLdjson"`
-	BankGraceMs int      `json:"bankGraceMs"`
+	QRATOR    bool     `json:"qrator"`
+	Challenge bool     `json:"challenge"`
+	Blocked   bool     `json:"blocked"`
+	LDJSON    []string `json:"ldjson"`
+	CSSPrice  string   `json:"cssPrice"`
+	Name      string   `json:"name"`
+	Title     string   `json:"title"`
+	// skipLDJSON — решение бота, а не страницы: со страницы приходит только
+	// то, что на ней написано, а правило «не верить разметке» задаётся
+	// настройками магазина.
+	skipLDJSON bool
 }
 
 var (
-	// Цена в узле страницы: одна группа цифр, разряды могут быть разделены пробелами.
-	priceRunRe        = regexp.MustCompile(`[0-9][0-9 ]*`)
-	priceKopecksRe    = regexp.MustCompile(`([0-9])[.,][0-9]{2}\b`)
+	// Цена в узле страницы: одна группа цифр, разряды могут быть разделены
+	// пробелами, в хвосте — необязательные копейки.
+	priceRunRe        = regexp.MustCompile(`[0-9][0-9 ]*(?:[.,][0-9]{2})?`)
 	shopTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon"}
 	priceSpaceRepl    = strings.NewReplacer(
 		"\u00a0", " ",
@@ -275,17 +277,49 @@ func parseDisplayedPrice(s string) (int64, bool) {
 	s = strings.ReplaceAll(s, "&nbsp;", " ")
 	s = strings.ReplaceAll(s, "&#160;", " ")
 	s = normalizePriceSpaces(s)
-	s = priceKopecksRe.ReplaceAllString(s, "$1")
 	runs := priceRunRe.FindAllString(s, 2)
 	if len(runs) != 1 {
 		return 0, false
 	}
-	digits := strings.ReplaceAll(strings.TrimSpace(runs[0]), " ", "")
-	rub, err := strconv.ParseInt(digits, 10, 64)
+	return parsePriceRun(runs[0])
+}
+
+// parsePriceRun разбирает одну найденную группу цифр. Разряды в ней идут
+// по три, и это проверяется: две цены, разделённые только пробелом
+// («5 672 5 105» — зачёркнутая рядом с текущей), регулярка видит как один
+// прогон, и без проверки разрядов они склеились бы в 56 725 105 ₽.
+func parsePriceRun(run string) (int64, bool) {
+	run = strings.TrimSpace(run)
+	var kopecks int64
+	if i := strings.IndexAny(run, ".,"); i >= 0 {
+		frac, err := strconv.ParseInt(run[i+1:], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		kopecks = frac
+		run = strings.TrimSpace(run[:i])
+	}
+	groups := strings.Fields(run)
+	if len(groups) == 0 {
+		return 0, false
+	}
+	// Одна группа без пробелов неоднозначной быть не может, поэтому её
+	// длину не ограничиваем.
+	if len(groups) > 1 {
+		if len(groups[0]) > 3 {
+			return 0, false
+		}
+		for _, g := range groups[1:] {
+			if len(g) != 3 {
+				return 0, false
+			}
+		}
+	}
+	rub, err := strconv.ParseInt(strings.Join(groups, ""), 10, 64)
 	if err != nil || rub <= 0 || rub > 1e9 {
 		return 0, false
 	}
-	return money.RubToKopecks(rub), true
+	return money.RubToKopecks(rub) + kopecks, true
 }
 
 func isInStock(availability string) bool {
@@ -307,8 +341,8 @@ func defaultCurrency(c string) string {
 }
 
 // parseVisiblePriceBits читает цену Маркета и Ozon: верна цена в карточке.
-// JSON-LD — запасной вариант, кроме Ozon (skipLdjson): там в разметке
-// часто цена «с другими банками», а нужна «с Ozon банком».
+// JSON-LD — запасной вариант, кроме Ozon (skipLDJSON в настройках магазина):
+// там в разметке часто цена «с другими банками», а нужна «с Ozon банком».
 func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 	if hardBlocked(p) {
 		return Snapshot{}, ErrChallenge
@@ -331,7 +365,7 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 		}, nil
 	}
 
-	if !p.SkipLDJSON {
+	if !p.skipLDJSON {
 		if snap, ok := parseLDJSON(p.LDJSON); ok {
 			if name != "" {
 				snap.Name = name

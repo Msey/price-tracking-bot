@@ -46,7 +46,9 @@ const (
 		WHERE u.tg_chat_id = ? AND s.active = 1
 		ORDER BY s.id`
 
-	sqlListAllRequests = `
+	// Заявка со свежим замером и последней ошибкой. Хвост (%s) — отбор и
+	// порядок: весь список для окна или заявки одного чата для /list.
+	sqlListRequests = `
 		SELECT s.id, s.created_at, u.tg_chat_id,
 		       p.id, p.site, p.external_key, p.url, p.name, p.city,
 		       last.price_kopecks, last.available, last.checked_at,
@@ -64,29 +66,10 @@ const (
 		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY occurred_at DESC, id DESC) AS rn
 		    FROM fetch_errors
 		) err ON err.product_id = p.id AND err.rn = 1
-		WHERE s.active = 1
-		ORDER BY s.id DESC`
+		WHERE s.active = 1 %s`
 
-	sqlListUserRequests = `
-		SELECT s.id, s.created_at, u.tg_chat_id,
-		       p.id, p.site, p.external_key, p.url, p.name, p.city,
-		       last.price_kopecks, last.available, last.checked_at,
-		       err.kind, err.occurred_at
-		FROM subscriptions s
-		JOIN users u ON u.id = s.user_id
-		JOIN products p ON p.id = s.product_id
-		LEFT JOIN (
-		    SELECT product_id, price_kopecks, available, checked_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
-		    FROM price_history
-		) last ON last.product_id = p.id AND last.rn = 1
-		LEFT JOIN (
-		    SELECT product_id, kind, occurred_at,
-		           ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY occurred_at DESC, id DESC) AS rn
-		    FROM fetch_errors
-		) err ON err.product_id = p.id AND err.rn = 1
-		WHERE s.active = 1 AND u.tg_chat_id = ?
-		ORDER BY s.id`
+	sqlRequestsAll  = `ORDER BY s.id DESC`
+	sqlRequestsUser = `AND u.tg_chat_id = ? ORDER BY s.id`
 
 	sqlListSubscriberIDs = `
 		SELECT u.tg_chat_id
@@ -173,9 +156,6 @@ const (
 		WHERE rn <= ?
 		ORDER BY product_id, checked_at ASC, rn DESC`
 
-	sqlNotified = `
-		SELECT last_notified_kopecks, last_notified_available FROM products WHERE id = ?`
-
 	sqlMarkNotified = `
 		UPDATE products SET last_notified_kopecks = ?, last_notified_available = ? WHERE id = ?`
 
@@ -190,6 +170,31 @@ const (
 
 	sqlProductByID = `
 		SELECT id, site, external_key, url, name, city FROM products WHERE id = ?`
+
+	// Оставляем последние N замеров каждого товара. Порядок тот же, что и
+	// у чтения истории, поэтому график после чистки не меняется.
+	sqlPruneHistory = `
+		DELETE FROM price_history
+		WHERE id IN (
+		    SELECT id FROM (
+		        SELECT id, ROW_NUMBER() OVER (
+		            PARTITION BY product_id ORDER BY checked_at DESC, id DESC) AS rn
+		        FROM price_history
+		    )
+		    WHERE rn > ?
+		)`
+
+	sqlPruneFetchErrors = `DELETE FROM fetch_errors WHERE occurred_at < ?`
+
+	// Только агрегаты по индексам: этот запрос выполняется раз в несколько
+	// секунд вместо тяжёлых списков с оконными функциями.
+	sqlFingerprint = `
+		SELECT
+		    (SELECT COUNT(*) FROM subscriptions WHERE active = 1),
+		    (SELECT COALESCE(MAX(id), 0) FROM subscriptions),
+		    (SELECT COUNT(*) FROM price_history),
+		    (SELECT COALESCE(MAX(id), 0) FROM price_history),
+		    (SELECT COALESCE(MAX(id), 0) FROM fetch_errors)`
 )
 
 func sqlPlaceholders(n int) string {

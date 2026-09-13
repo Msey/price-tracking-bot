@@ -3,10 +3,11 @@
 package gui
 
 import (
+	"image/color"
+	"log/slog"
 	"time"
 
-	"github.com/Msey/price-tracking-bot/internal/money"
-	"github.com/Msey/price-tracking-bot/internal/view"
+	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/lxn/walk"
 	"github.com/lxn/win"
 )
@@ -14,6 +15,9 @@ import (
 const rowHeight96 = 74 // компактная строка: в окне видно примерно вдвое больше товаров
 
 type board struct {
+	// theme значением: внутри только дескрипторы GDI, а нулевой board
+	// с пустой палитрой нужен тестам разметки.
+	theme
 	widget       *walk.CustomWidget
 	items        []Item
 	scroll       int
@@ -22,23 +26,8 @@ type board struct {
 	tipNode      int
 	lastClick    time.Time
 	lastIdx      int
-	titleFont    *walk.Font
-	metaFont     *walk.Font
-	priceFont    *walk.Font
 	tipFont      *walk.Font
 	tipPriceFont *walk.Font
-	bg           *walk.SolidColorBrush
-	row          *walk.SolidColorBrush
-	rowHot       *walk.SolidColorBrush
-	accent       *walk.SolidColorBrush
-	upBrush      *walk.SolidColorBrush
-	downBrush    *walk.SolidColorBrush
-	missBrush    *walk.SolidColorBrush
-	goldPen      walk.Pen
-	upPen        walk.Pen
-	downPen      walk.Pen
-	missPen      walk.Pen
-	gridPen      walk.Pen
 	icons        map[string]walk.Image
 	trash        walk.Image
 	trashHot     walk.Image
@@ -68,13 +57,92 @@ type board struct {
 	tipH     int
 	tipDPI   int
 	tipMiss  bool
+	// distinct — на графике только смена цены или наличия, плато из
+	// одинаковых соседних узлов схлопывается в один.
+	distinct bool
+	// series — готовые узлы строк, по одному на элемент items. Пересчёт
+	// только на смену списка или тумблера: paint и hit зовутся на каждое
+	// движение мыши, и считать серию там значило бы выделять срезы на кадр.
+	series []chartSeries
+}
+
+func newBoard(t theme) *board {
+	return &board{theme: t, hover: -1, tipItem: -1, tipNode: -1}
+}
+
+// loadImages готовит картинки строк: корзину в двух состояниях и значки
+// магазинов. Сбой одной картинки не мешает окну: строка просто рисуется
+// без неё.
+func (b *board) loadImages(keep func(walk.Disposable), log *slog.Logger) {
+	for _, want := range []struct {
+		color color.RGBA
+		dst   *walk.Image
+	}{
+		{trashMuted, &b.trash},
+		{iconGold, &b.trashHot},
+	} {
+		bmp, err := walk.NewBitmapFromImage(trashImage(64, want.color))
+		if err != nil {
+			log.Warn("иконка корзины", "error", err)
+			continue
+		}
+		keep(bmp)
+		*want.dst = bmp
+	}
+	b.icons = map[string]walk.Image{}
+	for _, site := range sites.SitesWithIcons() {
+		img := siteImage(site)
+		if img == nil {
+			continue
+		}
+		bmp, err := walk.NewBitmapFromImage(img)
+		if err != nil {
+			log.Warn("иконка магазина", "site", site, "error", err)
+			continue
+		}
+		keep(bmp)
+		b.icons[string(site)] = bmp
+	}
+}
+
+// display — узлы i-й строки. Индекс, а не Item: серия лежит рядом со списком.
+func (b *board) display(i int) chartSeries {
+	if i < 0 || i >= len(b.series) {
+		return chartSeries{}
+	}
+	return b.series[i]
+}
+
+func (b *board) rebuildSeries() {
+	if cap(b.series) < len(b.items) {
+		b.series = make([]chartSeries, len(b.items))
+	} else {
+		b.series = b.series[:len(b.items)]
+	}
+	for i := range b.items {
+		b.series[i] = chartSeriesOf(b.items[i].Samples, b.distinct)
+	}
+}
+
+func (b *board) setDistinct(on bool) {
+	if b.distinct == on {
+		return
+	}
+	b.distinct = on
+	b.rebuildSeries()
+	b.tipItem, b.tipNode = -1, -1
+	b.syncTip()
+	if b.widget != nil {
+		b.widget.Invalidate()
+	}
 }
 
 func (b *board) setItems(next []Item) {
-	if sameItems(b.items, next) {
+	if sameItems(b.items, next) && len(b.series) == len(next) {
 		return
 	}
 	b.items = next
+	b.rebuildSeries()
 	if b.tipItem >= len(b.items) {
 		b.tipItem, b.tipNode = -1, -1
 	}
@@ -124,147 +192,8 @@ func (b *board) viewH() int {
 	return b.widget.ClientBoundsPixels().Height
 }
 
-func (b *board) paint(canvas *walk.Canvas, _ walk.Rectangle) error {
-	if b.widget == nil {
-		return nil
-	}
-	bounds := b.widget.ClientBoundsPixels()
-	_ = canvas.FillRectanglePixels(b.bg, bounds)
-	m := b.metrics()
-	pad, titleH, metaH := m.pad, m.titleH, m.metaH
-	accentW, priceW, rowH := m.accentW, m.priceW, m.rowH
-	dpi := m.dpi
-
-	// Заголовок теплее белого, но светлее золота цены и мета-строки,
-	// иначе имя сливается с остальным текстом.
-	title := walk.RGB(236, 214, 176)
-	muted := walk.RGB(154, 141, 122)
-	gold := walk.RGB(226, 182, 87)
-
-	if len(b.items) == 0 {
-		msg := walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + bounds.Height/3, Width: bounds.Width - pad*2, Height: titleH * 2}
-		_ = canvas.DrawTextPixels("Пока нет ссылок.\nПришлите товар боту в Telegram.", b.titleFont, muted, msg, walk.TextCenter|walk.TextWordbreak|walk.TextNoPrefix)
-		return nil
-	}
-
-	var first int
-	if first = b.scroll / rowH; first < 0 {
-		first = 0
-	}
-	for i := first; i < len(b.items); i++ {
-		y := i*rowH - b.scroll
-		if y >= bounds.Height {
-			break
-		}
-		item := b.items[i]
-		row := m.rowRect(bounds.Width, y)
-		fill := b.row
-		if i == b.hover {
-			fill = b.rowHot
-		}
-		_ = canvas.FillRectanglePixels(fill, row)
-		_ = canvas.FillRectanglePixels(b.accent, walk.Rectangle{X: row.X, Y: row.Y, Width: accentW, Height: row.Height})
-
-		textX := row.X + pad
-		if icon := b.icons[item.SiteKey]; icon != nil {
-			iconSize := walk.IntFrom96DPI(16, dpi)
-			iconGap := walk.IntFrom96DPI(6, dpi)
-			iconY := row.Y + pad + (titleH-iconSize)/2
-			if iconY < row.Y+pad {
-				iconY = row.Y + pad
-			}
-			_ = canvas.DrawImageStretchedPixels(icon, walk.Rectangle{
-				X: textX, Y: iconY, Width: iconSize, Height: iconSize,
-			})
-			textX += iconSize + iconGap
-		}
-
-		titleBox := walk.Rectangle{X: textX, Y: row.Y + pad, Width: row.X + row.Width - textX - pad - priceW, Height: titleH}
-		priceBox := walk.Rectangle{X: row.X + row.Width - pad - priceW, Y: row.Y + pad, Width: priceW, Height: titleH}
-		metaBox := walk.Rectangle{X: textX, Y: row.Y + pad + titleH, Width: row.X + row.Width - textX - pad, Height: metaH}
-
-		_ = canvas.DrawTextPixels(item.Title, b.titleFont, title, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
-		_ = canvas.DrawTextPixels(item.Price, b.priceFont, gold, priceBox, walk.TextRight|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-
-		meta := item.Site + " · " + item.City + " · " + item.Status
-		if item.Watchers > 1 {
-			meta += " · " + view.RuPlural(item.Watchers, "подписчик", "подписчика", "подписчиков")
-		}
-		if item.Checked != "" {
-			meta += " · " + item.Checked
-		}
-		_ = canvas.DrawTextPixels(meta, b.metaFont, muted, metaBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
-
-		chart := m.chartRect(row)
-		_ = canvas.FillRectanglePixels(b.bg, chart)
-		if b.gridPen != nil {
-			mid := chart.Y + chart.Height/2
-			_ = canvas.DrawLinePixels(b.gridPen, walk.Point{X: chart.X, Y: mid}, walk.Point{X: chart.X + chart.Width, Y: mid})
-		}
-		pts := sparklineInto(b.spark, chart.Width, chart.Height, item.Points)
-		b.spark = pts
-		if len(pts) == 0 {
-			_ = canvas.DrawTextPixels("график появится после первой проверки", b.metaFont, muted, chart, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-		} else {
-			b.wpts = b.wpts[:0]
-			for _, p := range pts {
-				b.wpts = append(b.wpts, walk.Point{X: chart.X + p.X, Y: chart.Y + p.Y})
-			}
-			if len(pts) == 1 {
-				pen := b.goldPen
-				if len(item.Samples) > 0 && !item.Samples[0].Available && b.missPen != nil {
-					pen = b.missPen
-				}
-				if pen != nil {
-					left, right := singlePriceSpan(chart.Width, pts[0])
-					_ = canvas.DrawLinePixels(pen,
-						walk.Point{X: chart.X + left.X, Y: chart.Y + left.Y},
-						walk.Point{X: chart.X + right.X, Y: chart.Y + right.Y})
-				}
-			}
-			for j := 1; j < len(b.wpts) && j < len(item.Points); j++ {
-				if pen := b.segmentPen(item, j); pen != nil {
-					b.drawSparkCurve(canvas, pen, b.wpts[j-1], b.wpts[j])
-				}
-			}
-
-			nodeR := walk.IntFrom96DPI(2, dpi)
-			hotR := walk.IntFrom96DPI(3, dpi)
-			// Подпись — только на смене цены. Одинаковые узлы подряд без
-			// ценника: иначе плато из десятков замеров забивает график одним
-			// и тем же числом. Близкие разные цены по-прежнему не наезжают
-			// друг на друга.
-			labelEdge := chart.X
-			for j, p := range b.wpts {
-				r := nodeR
-				hot := i == b.tipItem && j == b.tipNode
-				if hot {
-					r = hotR
-				}
-				brush := b.nodeBrush(item, j)
-				fillChartNode(canvas, brush, p.X, p.Y, r)
-				if !sampleChartLabel(item.Samples, j) {
-					continue
-				}
-				price := money.FormatKopecks(item.Samples[j].Price)
-				box, ok := b.nodePriceBox(chart, p, price, r, m)
-				if !ok || box.X < labelEdge {
-					continue
-				}
-				labelClr := gold
-				if !item.Samples[j].Available {
-					labelClr = muted
-				}
-				_ = canvas.DrawTextPixels(price, b.metaFont, labelClr, box,
-					walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextNoPrefix)
-				labelEdge = box.X + box.Width + walk.IntFrom96DPI(6, dpi)
-			}
-		}
-		b.paintTrash(canvas, m.trashRect(row), i == b.hover && b.hoverTrash)
-	}
-	return nil
-}
-
+// boardMetrics — размеры строки под текущую плотность экрана. Считаются
+// один раз на кадр: их спрашивают и рисование, и попадание мыши.
 type boardMetrics struct {
 	dpi, pad, titleH, metaH, chartH, accentW, priceW, gap, rowH, trash int
 }
@@ -314,124 +243,6 @@ func rectContains(r walk.Rectangle, x, y int) bool {
 	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
 }
 
-func fillChartNode(canvas *walk.Canvas, brush *walk.SolidColorBrush, cx, cy, r int) {
-	if canvas == nil || brush == nil || r < 1 {
-		return
-	}
-	for dy := -r; dy <= r; dy++ {
-		half := nodeHalfWidth(r, dy)
-		if half < 1 && r > 0 {
-			continue
-		}
-		_ = canvas.FillRectanglePixels(brush, walk.Rectangle{
-			X: cx - half, Y: cy + dy, Width: half*2 + 1, Height: 1,
-		})
-	}
-}
-
-func (b *board) drawSparkCurve(canvas *walk.Canvas, pen walk.Pen, from, to walk.Point) {
-	if canvas == nil || pen == nil {
-		return
-	}
-	b.curve = appendCubic(b.curve[:0], point{X: from.X, Y: from.Y}, point{X: to.X, Y: to.Y})
-	b.wcurve = b.wcurve[:0]
-	for _, p := range b.curve {
-		b.wcurve = append(b.wcurve, walk.Point{X: p.X, Y: p.Y})
-	}
-	if len(b.wcurve) < 2 {
-		return
-	}
-	_ = canvas.DrawPolylinePixels(pen, b.wcurve)
-}
-
-func (b *board) sampleMissing(it Item, i int) bool {
-	return i >= 0 && i < len(it.Samples) && !it.Samples[i].Available
-}
-
-func (b *board) segmentPen(it Item, j int) walk.Pen {
-	if b.sampleMissing(it, j) && b.missPen != nil {
-		return b.missPen
-	}
-	if j < 1 || j >= len(it.Points) {
-		return b.goldPen
-	}
-	return b.sparkPen(it.Points[j-1], it.Points[j])
-}
-
-func (b *board) nodeBrush(it Item, j int) *walk.SolidColorBrush {
-	if b.sampleMissing(it, j) && b.missBrush != nil {
-		return b.missBrush
-	}
-	if j > 0 && j < len(it.Points) {
-		return b.sparkNode(it.Points[j-1], it.Points[j])
-	}
-	return b.accent
-}
-
-func (b *board) sparkPen(from, to int64) walk.Pen {
-	switch priceMove(from, to) {
-	case -1:
-		if b.downPen != nil {
-			return b.downPen
-		}
-	case 1:
-		if b.upPen != nil {
-			return b.upPen
-		}
-	}
-	return b.goldPen
-}
-
-func (b *board) sparkNode(from, to int64) *walk.SolidColorBrush {
-	switch priceMove(from, to) {
-	case -1:
-		if b.downBrush != nil {
-			return b.downBrush
-		}
-	case 1:
-		if b.upBrush != nil {
-			return b.upBrush
-		}
-	}
-	return b.accent
-}
-
-// nodePriceBox — место для ценника узла: над точкой, а если сверху не
-// влезает — под ней. Рамка подгоняется по размеру самого текста.
-func (b *board) nodePriceBox(chart walk.Rectangle, p walk.Point, price string, nodeR int, m boardMetrics) (walk.Rectangle, bool) {
-	if price == "" || b.metaFont == nil {
-		return walk.Rectangle{}, false
-	}
-	sz := b.measureLine(b.metaFont, price)
-	if sz.Width < 1 {
-		return walk.Rectangle{}, false
-	}
-	gap := walk.IntFrom96DPI(4, m.dpi)
-	lx := p.X - sz.Width/2
-	ly := p.Y - nodeR - gap - sz.Height
-	if ly < chart.Y {
-		ly = p.Y + nodeR + gap
-	}
-	if lx < chart.X {
-		lx = chart.X
-	}
-	if lx+sz.Width > chart.X+chart.Width {
-		lx = chart.X + chart.Width - sz.Width
-	}
-	return walk.Rectangle{X: lx, Y: ly, Width: sz.Width, Height: sz.Height}, true
-}
-
-func (b *board) paintTrash(canvas *walk.Canvas, r walk.Rectangle, hot bool) {
-	icon := b.trash
-	if hot && b.trashHot != nil {
-		icon = b.trashHot
-	}
-	if icon == nil {
-		return
-	}
-	_ = canvas.DrawImageStretchedPixels(icon, r)
-}
-
 func (b *board) rowIndex(y int) int {
 	if len(b.items) == 0 {
 		return -1
@@ -473,8 +284,8 @@ func (b *board) hit(x, y int) (item, node int) {
 	if b.overTrash(x, y) {
 		return
 	}
-	it := b.items[idx]
-	if len(it.Points) == 0 {
+	prices := b.display(idx).prices
+	if len(prices) == 0 {
 		return
 	}
 	width := 0
@@ -487,7 +298,7 @@ func (b *board) hit(x, y int) (item, node int) {
 	if x < chart.X || x >= chart.X+chart.Width || y < chart.Y || y >= chart.Y+chart.Height {
 		return
 	}
-	node = hitSample(chart.Width, len(it.Points), x-chart.X)
+	node = hitSample(chart.Width, len(prices), x-chart.X)
 	return
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -87,10 +88,53 @@ func TestMarkChromeExitedCleanlyDisablesSessionRestore(t *testing.T) {
 	}
 }
 
-func TestEnsureRestoreNewTabInsertsKey(t *testing.T) {
-	got := ensureRestoreNewTab(`{"profile":{"name":"bot"}}`)
-	if !strings.Contains(got, `"restore_on_startup":5`) && !strings.Contains(got, `"restore_on_startup": 5`) {
+func TestCleanProfileJSONInsertsSessionKey(t *testing.T) {
+	got, changed := cleanProfileJSON([]byte(`{"profile":{"name":"bot"}}`), true)
+	if !changed {
+		t.Fatal("ключ restore_on_startup нужно добавить")
+	}
+	if !strings.Contains(string(got), `"restore_on_startup":5`) {
 		t.Fatalf("не вставили restore_on_startup: %s", got)
+	}
+	if !strings.Contains(string(got), `"name":"bot"`) {
+		t.Fatalf("остальные настройки должны остаться: %s", got)
+	}
+}
+
+// Ключи чужих значений трогать нельзя: строковая замена по всему файлу
+// раньше могла попасть в чужую строку и испортить профиль.
+func TestCleanProfileJSONLeavesForeignValuesAlone(t *testing.T) {
+	raw := []byte(`{"profile":{"exit_type":"Normal","exited_cleanly":true},` +
+		`"session":{"restore_on_startup":5},` +
+		`"bookmark":{"note":"exit_type\":\"Crashed"}}`)
+	if _, changed := cleanProfileJSON(raw, true); changed {
+		t.Fatal("менять нечего, файл трогать не нужно")
+	}
+}
+
+func TestCleanProfileJSONSkipsBrokenFile(t *testing.T) {
+	if _, changed := cleanProfileJSON([]byte(`{"profile":`), true); changed {
+		t.Fatal("непонятный файл переписывать нельзя")
+	}
+}
+
+func TestWriteFileAtomicReplacesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Preferences")
+	if err := os.WriteFile(path, []byte("старое"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(path, []byte("новое")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "новое" {
+		t.Fatalf("содержимое %q", got)
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Fatal("временный файл должен быть убран")
 	}
 }
 
@@ -114,6 +158,18 @@ func TestSameShopURL(t *testing.T) {
 	}
 	if sameShopURL(ozon, "about:blank") {
 		t.Fatal("about:blank")
+	}
+	// Хост сравнивается точно: иначе страница на своём домене отдала бы
+	// боту любую цену как цену Ozon.
+	for _, spoof := range []string{
+		"https://ozon.ru.example.com/product/1",
+		"https://evil-ozon.ru.attacker.net/product/1",
+		"https://notmarket.yandex.ru.example.com/card/1",
+		"https://dns-shop.ru.example.com/product/1",
+	} {
+		if sameShopURL(ozon, spoof) {
+			t.Errorf("%s не должен считаться магазином", spoof)
+		}
 	}
 }
 
@@ -160,17 +216,30 @@ func TestExtractTakesPriceEarly(t *testing.T) {
 	if strings.Contains(s, "document.documentElement.innerHTML") {
 		t.Fatal("полный innerHTML снова сериализует карточку")
 	}
-	if !strings.Contains(s, "skipLdjson") {
-		t.Fatal("Ozon не должен закрывать вкладку по JSON-LD")
-	}
 	if !strings.Contains(s, "банками ozon") {
 		t.Fatal("нужен ценник с Ozon банком, не первый крупный")
 	}
 	if !strings.Contains(s, "6000") {
 		t.Fatal("без подписи банка нужен запасной ценник из webPrice, иначе вкладка висит минуту")
 	}
-	if !strings.Contains(s, "isolatePrice") || !strings.Contains(s, "bankGraceMs") {
+	if !strings.Contains(s, "isolatePrice") {
 		t.Fatal("ценник нужно нормализовать, иначе parseDisplayedPrice молча отказывается")
+	}
+	// Правила разбора живут в настройках магазина: страница не должна
+	// указывать боту, чему на ней верить.
+	for _, sent := range []string{"skipLdjson", "bankGraceMs"} {
+		if strings.Contains(s, sent) {
+			t.Fatalf("страница не задаёт правила разбора, а тут есть %s", sent)
+		}
+	}
+	if !strings.Contains(s, "stopPoll") {
+		t.Fatal("после отправки цены секундный опрос страницы нужно глушить")
+	}
+	if !strings.Contains(s, "ozonResetOnNav") {
+		t.Fatal("переход между карточками без перезагрузки должен сбрасывать отсрочку")
+	}
+	if strings.Count(s, ".innerText") != 1 {
+		t.Fatal("innerText считает раскладку страницы: он должен вызываться в одном месте, под кэшем")
 	}
 }
 
@@ -332,11 +401,67 @@ func newTestBrowser(t *testing.T) *Browser {
 	t.Helper()
 	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
 	b.token = "tokentokentoken1"
-	if err := b.ensureServerLocked(); err != nil {
+	if err := b.serve(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(b.Close)
 	return b
+}
+
+// markExtSeen зовут обработчики HTTP параллельно. Канал должен закрыться
+// один раз: второй close уронил бы процесс.
+func TestMarkExtSeenIsSafeInParallel(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
+	defer b.Close()
+	b.setExtSeen(make(chan struct{}))
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			b.markExtSeen()
+			_ = b.extReady()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if !b.extReady() {
+		t.Fatal("после markExtSeen расширение должно считаться на связи")
+	}
+	b.setExtSeen(nil)
+	b.markExtSeen()
+	if b.extReady() {
+		t.Fatal("без канала расширение не на связи")
+	}
+}
+
+// Close не должен ждать полный таймаут страницы: ожидание обрывается через
+// b.done, иначе выход из бота вставал бы на минуту.
+func TestCloseStopsPendingWait(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		select {
+		case <-b.done:
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("ожидание не оборвалось")
+		}
+	}()
+	b.Close()
+	b.Close() // повторный вызов не должен паниковать
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close не разбудил ожидание")
+	}
 }
 
 func TestPushLatestBitsKeepsNewest(t *testing.T) {

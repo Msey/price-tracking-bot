@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Msey/price-tracking-bot/internal/sites"
@@ -45,8 +46,30 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
+		if !loopbackHost(r.Host) {
+			s.log.Warn("запрос с чужим Host", "host", r.Host, "remote", r.RemoteAddr)
+			http.Error(w, "страница доступна только по localhost", http.StatusForbidden)
+			return
+		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// loopbackHost — в запрос подставлен loopback, а не чужое имя, которое
+// смотрит на 127.0.0.1. Слушать loopback недостаточно: без этой проверки
+// сторонняя страница через DNS rebinding прочитала бы все заявки вместе с
+// Telegram id подписчиков.
+func loopbackHost(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host
+	}
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 func loopbackAddr(addr string) error {

@@ -138,7 +138,7 @@ func TestLoadItemsSkipsUnknownMissing(t *testing.T) {
 	if got[0].Price != "—" {
 		t.Errorf("цена %q, ожидался прочерк", got[0].Price)
 	}
-	if len(got[0].Samples) != 0 || len(got[0].Points) != 0 {
+	if len(got[0].Samples) != 0 {
 		t.Fatalf("нулевой серый замер не должен рисоваться: %+v", got[0].Samples)
 	}
 }
@@ -261,19 +261,62 @@ func TestPriceMove(t *testing.T) {
 	}
 }
 
-func TestFirstPriceLabel(t *testing.T) {
-	prices := []int64{100, 100, 100, 90, 90, 120}
-	want := []bool{true, false, false, true, false, true}
-	for i, w := range want {
-		if got := firstPriceLabel(prices, i); got != w {
-			t.Errorf("i=%d: %v, нужно %v", i, got, w)
+func TestCollapseSameChartNodes(t *testing.T) {
+	in := []Sample{
+		{Price: 47200, When: "a", Available: true},
+		{Price: 48300, When: "b", Available: true},
+		{Price: 48300, When: "c", Available: true},
+		{Price: 48300, When: "d", Available: true},
+		{Price: 48300, When: "e", Available: false},
+	}
+	got := collapseSameChartNodes(in)
+	if len(got) != 3 {
+		t.Fatalf("узлов %d, ждали 3: %+v", len(got), got)
+	}
+	if got[0].Price != 47200 || got[1].When != "d" || got[2].When != "e" || got[2].Available {
+		t.Fatalf("%+v", got)
+	}
+	if collapseSameChartNodes(nil) != nil {
+		t.Fatal("пустой вход")
+	}
+	one := collapseSameChartNodes([]Sample{{Price: 1, When: "x", Available: true}})
+	if len(one) != 1 || one[0].When != "x" {
+		t.Fatalf("один замер: %+v", one)
+	}
+}
+
+func TestChartSeriesOfDistinct(t *testing.T) {
+	samples := []Sample{{Price: 100}, {Price: 100}, {Price: 100}, {Price: 90}}
+
+	got := chartSeriesOf(samples, true)
+	if len(got.prices) != 2 || got.prices[0] != 100 || got.prices[1] != 90 || len(got.samples) != 2 {
+		t.Fatalf("смена: %v %+v", got.prices, got.samples)
+	}
+
+	all := chartSeriesOf(samples, false)
+	if len(all.prices) != 4 || len(all.samples) != 4 {
+		t.Fatalf("все узлы: %v", all.prices)
+	}
+	for i, s := range all.samples {
+		if all.prices[i] != s.Price {
+			t.Fatalf("цены и замеры разошлись на %d: %+v", i, all)
 		}
 	}
-	if firstPriceLabel(nil, 0) || firstPriceLabel(prices, -1) || firstPriceLabel(prices, 99) {
-		t.Fatal("за пределами среза не должно быть подписи")
+
+	if empty := chartSeriesOf(nil, true); empty.prices != nil || empty.samples != nil {
+		t.Fatalf("пустой вход: %+v", empty)
 	}
-	if !firstPriceLabel([]int64{7}, 0) {
-		t.Fatal("единственный узел подписывается")
+}
+
+// Когда схлопывать нечего, вход возвращается без копии.
+func TestCollapseSameChartNodesKeepsInput(t *testing.T) {
+	in := []Sample{{Price: 100}, {Price: 90}, {Price: 100}}
+	out := collapseSameChartNodes(in)
+	if &out[0] != &in[0] {
+		t.Fatal("без плато копия не нужна")
+	}
+	if len(out) != 3 {
+		t.Fatalf("узлов %d", len(out))
 	}
 }
 

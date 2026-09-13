@@ -16,7 +16,6 @@ type ShopOptions struct {
 	Browser         *Browser
 	ProfileDir      string
 	ChromePath      string
-	Headless        bool
 	CircuitCooldown time.Duration
 	Log             *slog.Logger
 }
@@ -25,6 +24,10 @@ type shopConfig struct {
 	site     string
 	pageWait time.Duration
 	parse    func(pageBits) (Snapshot, error)
+	// policy — чему верить на странице. Решает бот, а не расширение:
+	// содержимое страницы приходит из интернета, и правило «не читать
+	// JSON-LD» не должно зависеть от того, что в этом ответе написано.
+	policy pagePolicy
 	// tripOnChallenge — гасить весь магазин на CIRCUIT_COOLDOWN из-за капчи.
 	// Для Ozon выключено: его капча проходится в том же окне, и после
 	// ручного прохождения карточка должна читаться сразу.
@@ -48,7 +51,6 @@ func newShop(cfg shopConfig, opt ShopOptions) *Shop {
 		br = NewBrowser(BrowserOptions{
 			ProfileDir: opt.ProfileDir,
 			ChromePath: opt.ChromePath,
-			Headless:   opt.Headless,
 			Log:        opt.Log,
 		})
 		owned = true
@@ -85,7 +87,7 @@ func (s *Shop) Fetch(ctx context.Context, p storage.Product) (Snapshot, error) {
 			ErrChallenge, s.breaker.RetryAt().Format(time.RFC3339), s.breaker.Reason())
 	}
 
-	snap, err := s.browser.do(ctx, s.cfg.pageWait, p, s.cfg.parse)
+	snap, err := s.browser.do(ctx, s.cfg.pageWait, p, s.cfg.parse, s.cfg.policy)
 	if err != nil {
 		s.log.Info("карточка не прочитана", "site", s.cfg.site, "url", p.URL, "error", err)
 		s.maybeTrip(err)

@@ -24,7 +24,6 @@ func TestLiveDNSFetch(t *testing.T) {
 	d := NewDNS(ShopOptions{
 		ProfileDir:      filepath.Join(t.TempDir(), "profile"),
 		ChromePath:      chrome,
-		Headless:        false,
 		CircuitCooldown: 45 * time.Minute,
 	})
 	defer d.Close()

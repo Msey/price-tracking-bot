@@ -3,13 +3,17 @@ package fetch
 import (
 	"regexp"
 	"strings"
+	"testing"
 )
 
 // Тестовая обвязка: превращает сохранённый HTML карточки в pageBits —
-// ровно в тот вид, в котором их отдаёт JS из dns.go, market.go и ozon.go.
-// В бою страницу читает Chrome, поэтому этих регулярок в продакшене нет:
-// иначе рядом жила бы вторая реализация разбора, которая молча разъедется
-// с настоящими селекторами.
+// ровно в тот вид, в котором их отдаёт extract.js. В бою страницу читает
+// Chrome, поэтому этих регулярок в продакшене нет: иначе рядом жила бы
+// вторая реализация разбора.
+//
+// Обвязка остаётся потому, что даёт разбору цены проверку на настоящих
+// сохранённых карточках. Плата за это — селекторы в двух местах, и
+// TestShimSelectorsMatchExtension следит, чтобы они не разъехались молча.
 var (
 	ldJSONRe           = regexp.MustCompile(`(?is)<script[^>]*type=["']application/ld\+json["'][^>]*>(.*?)</script>`)
 	divRe              = regexp.MustCompile(`(?is)<div\s+([^>]+)>([^<]*)</div>`)
@@ -20,6 +24,29 @@ var (
 	titleRe            = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
 	tagRe              = regexp.MustCompile(`(?s)<[^>]+>`)
 )
+
+// TestShimSelectorsMatchExtension ловит расхождение обвязки с расширением:
+// если в extract.js поменяли селектор, тесты на сохранённых карточках
+// продолжали бы проходить по старому — и настоящая карточка ломалась бы
+// только в бою.
+func TestShimSelectorsMatchExtension(t *testing.T) {
+	raw, err := extFS.ReadFile("ext/extract.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(raw)
+	for _, sel := range []string{
+		"product-buy__price",     // DNS
+		"snippet-price-current",  // Яндекс Маркет
+		`data-widget="webPrice"`, // Ozon
+		"tsHeadline",             // Ozon: класс крупного ценника
+		"ozon банк",              // Ozon: подпись цены с банком
+	} {
+		if !strings.Contains(js, sel) {
+			t.Errorf("обвязка ищет %q, а extract.js — уже нет", sel)
+		}
+	}
+}
 
 func parseDNSHTML(html string) (Snapshot, error) {
 	return parseBits(pageBits{

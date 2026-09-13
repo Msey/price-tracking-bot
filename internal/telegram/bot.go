@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +15,8 @@ import (
 	telebot "gopkg.in/telebot.v3"
 
 	"github.com/Msey/price-tracking-bot/internal/config"
+	"github.com/Msey/price-tracking-bot/internal/diaglog"
+	"github.com/Msey/price-tracking-bot/internal/wait"
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
@@ -33,9 +34,8 @@ const (
 )
 
 var (
-	errOffline  = errors.New("telegram: нет связи, уведомление отложено")
-	tokenInText = regexp.MustCompile(`bot\d+:[A-Za-z0-9_-]+`)
-	helpText    = fmt.Sprintf(`Я слежу за ценами на DNS, Яндекс.Маркете и Ozon.
+	errOffline = errors.New("telegram: нет связи, уведомление отложено")
+	helpText   = fmt.Sprintf(`Я слежу за ценами на DNS, Яндекс.Маркете и Ozon.
 
 Пришлите ссылку на карточку товара. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент.
 
@@ -130,7 +130,7 @@ func (b *Bot) Start(ctx context.Context) {
 		if err != nil {
 			b.setRetry(err, delay)
 			b.log.Warn("нет связи с Telegram, повторю", "delay", delay, "error", redactTelegram(err.Error()))
-			if !sleepCtx(ctx, delay) {
+			if !wait.Sleep(ctx, delay) {
 				return
 			}
 			delay += 5 * time.Second
@@ -212,7 +212,7 @@ func (b *Bot) setRetry(err error, wait time.Duration) {
 	b.mu.Lock()
 	b.ready = false
 	b.nextTry = time.Now().Add(wait)
-	b.lastErr = clipLog(redactTelegram(err.Error()), 80)
+	b.lastErr = diaglog.Clip(redactTelegram(err.Error()), 80)
 	b.mu.Unlock()
 }
 
@@ -274,7 +274,7 @@ func (b *Bot) handleHelp(c telebot.Context) error {
 
 func (b *Bot) handleText(c telebot.Context) error {
 	text := strings.TrimSpace(c.Text())
-	b.log.Info("сообщение в чат", "user_id", telegramUserID(c), "text", clipLog(text, 180))
+	b.log.Info("сообщение в чат", "user_id", telegramUserID(c), "text", diaglog.Clip(text, 180))
 	if text == "" {
 		return nil
 	}
@@ -286,7 +286,7 @@ func (b *Bot) handleText(c telebot.Context) error {
 
 func (b *Bot) handleAdd(c telebot.Context) error {
 	args := strings.TrimSpace(strings.Join(c.Args(), " "))
-	b.log.Info("команда /add", "user_id", telegramUserID(c), "args", clipLog(args, 180))
+	b.log.Info("команда /add", "user_id", telegramUserID(c), "args", diaglog.Clip(args, 180))
 	if args == "" {
 		return c.Send("Использование: /add &lt;ссылка на товар&gt;", telebot.NoPreview)
 	}
@@ -516,17 +516,8 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
-func clipLog(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	r := []rune(s)
-	if n <= 1 || len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
-}
-
 func redactTelegram(s string) string {
-	return tokenInText.ReplaceAllString(s, "bot***")
+	return diaglog.Redact(s)
 }
 
 func formatRetry(d time.Duration) string {
@@ -542,16 +533,3 @@ func formatRetry(d time.Duration) string {
 	}
 }
 
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}

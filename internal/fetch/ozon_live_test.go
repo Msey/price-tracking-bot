@@ -29,7 +29,6 @@ func TestLiveOzonFetch(t *testing.T) {
 	o := NewOzon(ShopOptions{
 		ProfileDir:      profile,
 		ChromePath:      chrome,
-		Headless:        false,
 		CircuitCooldown: 45 * time.Minute,
 	})
 	defer o.Close()
