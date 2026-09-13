@@ -84,6 +84,8 @@ var (
 	ozonSafeSlug    = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,240}$`)
 	// Короткая шаринговая ссылка из приложения: /t/WcmKNaP.
 	ozonShortPath = regexp.MustCompile(`(?i)^/t/([a-z0-9]{4,24})(?:/|$)`)
+	// /catalog/949425394 и /catalog/949425394/detail.aspx — id всегда в пути.
+	wbProductPath = regexp.MustCompile(`(?i)^/catalog/(\d{5,})(?:/detail\.aspx)?(?:/|$)`)
 )
 
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
@@ -119,6 +121,8 @@ func Parse(raw string) (Ref, error) {
 		return parseYandexMarket(u)
 	case Ozon:
 		return parseOzon(u)
+	case Wildberries:
+		return parseWildberries(u)
 	default:
 		return Ref{}, fmt.Errorf("%w: %s", ErrNotSupported, site.Title())
 	}
@@ -197,6 +201,16 @@ func parseOzon(u *url.URL) (Ref, error) {
 		canonical = "https://www.ozon.ru/product/" + strings.ToLower(slug) + "-" + key
 	}
 	return Ref{Site: Ozon, ExternalKey: key, URL: canonical}, nil
+}
+
+func parseWildberries(u *url.URL) (Ref, error) {
+	m := wbProductPath.FindStringSubmatch(u.EscapedPath())
+	if m == nil {
+		return Ref{}, ErrNotAProduct
+	}
+	key := m[1]
+	canonical := "https://www.wildberries.ru/catalog/" + key + "/detail.aspx"
+	return Ref{Site: Wildberries, ExternalKey: key, URL: canonical}, nil
 }
 
 // ByHost — магазин по хосту ссылки. Сравнение точное, поэтому

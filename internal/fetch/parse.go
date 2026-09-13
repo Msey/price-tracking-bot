@@ -46,7 +46,7 @@ var (
 	// Цена в узле страницы: одна группа цифр, разряды могут быть разделены
 	// пробелами, в хвосте — необязательные копейки.
 	priceRunRe        = regexp.MustCompile(`[0-9][0-9 ]*(?:[.,][0-9]{2})?`)
-	shopTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon"}
+	shopTitleCutovers = []string{" — купить", " – купить", " | ", " — Яндекс", " – Яндекс", " — OZON", " – OZON", " на OZON", " на Ozon", " — Wildberries", " – Wildberries", " - WILDBERRIES"}
 	priceSpaceRepl    = strings.NewReplacer(
 		"\u00a0", " ",
 		"\u202f", " ",
@@ -142,10 +142,10 @@ func httpCodeTitlePrefix(t string) bool {
 	return false
 }
 
-// ozonInterstitial — заглушка «Похоже, нет соединения». Это антибот, а не
-// обрыв сети: в обычном Chrome та же ссылка открывается. На странице кнопка
-// «Обновить страницу» — её нужно нажать и подождать карточку.
-func ozonInterstitial(p pageBits) bool {
+// antibotWall — заглушка антибота: «Похоже, нет соединения» у Ozon
+// или «Подозрительная активность» у Wildberries. Это не обрыв сети:
+// в обычном Chrome та же ссылка открывается.
+func antibotWall(p pageBits) bool {
 	if p.Blocked {
 		return true
 	}
@@ -155,13 +155,14 @@ func ozonInterstitial(p pageBits) bool {
 }
 
 // needsHuman — на странице есть действие, которое может сделать человек:
-// капча Ozon/Маркета или кнопка «Обновить страницу» у заглушки Ozon.
-// HTTP 403 сюда не входит: бан по IP кнопкой не снимается.
+// капча Ozon/Маркета, кнопка «Обновить страницу» у заглушки Ozon
+// или ожидание таймера Wildberries. HTTP 403 сюда не входит:
+// бан по IP кнопкой не снимается.
 func needsHuman(p pageBits) bool {
 	if hardBlocked(p) {
 		return false
 	}
-	return p.Challenge || ozonInterstitial(p)
+	return p.Challenge || antibotWall(p)
 }
 
 type ldNode struct {
@@ -373,7 +374,7 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 			return snap, nil
 		}
 	}
-	if botWall(p) || ozonInterstitial(p) {
+	if botWall(p) || antibotWall(p) {
 		return Snapshot{}, ErrChallenge
 	}
 	return Snapshot{}, ErrNoPrice

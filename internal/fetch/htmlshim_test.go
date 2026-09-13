@@ -41,6 +41,9 @@ func TestShimSelectorsMatchExtension(t *testing.T) {
 		`data-widget="webPrice"`, // Ozon
 		"tsHeadline",             // Ozon: класс крупного ценника
 		"ozon банк",              // Ozon: подпись цены с банком
+		"кошельк",                // Wildberries: подпись цены с кошельком
+		"price-block__wallet-price",
+		"price-block__final-price",
 	} {
 		if !strings.Contains(js, sel) {
 			t.Errorf("обвязка ищет %q, а extract.js — уже нет", sel)
@@ -77,6 +80,16 @@ func parseOzonHTML(html string) (Snapshot, error) {
 	})
 }
 
+func parseWildberriesHTML(html string) (Snapshot, error) {
+	return parseVisiblePriceBits(pageBits{
+		Blocked:  wbAntibotHTML(html),
+		LDJSON:   extractLDJSON(html),
+		CSSPrice: extractWBPriceText(html),
+		Name:     extractH1(html),
+		Title:    extractTitle(html),
+	})
+}
+
 func dnsChallengeHTML(html string) bool {
 	h := strings.ToLower(html)
 	if titleLooksLikeHTTPBan(extractTitle(html)) {
@@ -104,6 +117,13 @@ func ozonInterstitialHTML(html string) bool {
 	return strings.Contains(h, "нет соединения") ||
 		strings.Contains(h, "antibot challenge") ||
 		strings.Contains(h, "fab_chig")
+}
+
+func wbAntibotHTML(html string) bool {
+	h := strings.ToLower(html)
+	return strings.Contains(h, "подозрительная активность") ||
+		strings.Contains(h, "новая попытка через") ||
+		strings.Contains(h, "проверяем браузер")
 }
 
 func extractLDJSON(html string) []string {
@@ -168,6 +188,43 @@ func extractOzonPriceText(html string) string {
 			continue
 		}
 		if m := ozonHeadlineRe.FindStringSubmatch(priceWindow(html[i:])); len(m) == 2 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
+}
+
+var (
+	wbH2PriceRe     = regexp.MustCompile(`(?is)<h2\b[^>]*>\s*([^<]+?)\s*<`)
+	wbWalletClassRe = regexp.MustCompile(`(?is)class=["'][^"']*\bprice-block__wallet-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbFinalPriceRe  = regexp.MustCompile(`(?is)<ins\b[^>]*class=["'][^"']*\bprice-block__final-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+)
+
+func extractWBPriceText(html string) string {
+	low := strings.ToLower(html)
+	low = strings.ReplaceAll(low, "ё", "е")
+	if loc := strings.Index(low, "кошельк"); loc >= 0 {
+		start := loc - 2500
+		if start < 0 {
+			start = 0
+		}
+		window := html[start:loc]
+		if m := wbH2PriceRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
+			if p := strings.TrimSpace(m[len(m)-1][1]); p != "" {
+				return p
+			}
+		}
+		if m := wbWalletClassRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
+			if p := strings.TrimSpace(m[len(m)-1][1]); p != "" {
+				return p
+			}
+		}
+	}
+	if m := wbWalletClassRe.FindStringSubmatch(html); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	if i := strings.Index(low, "product-page__price-block"); i >= 0 {
+		if m := wbFinalPriceRe.FindStringSubmatch(priceWindow(html[i:])); len(m) == 2 {
 			return strings.TrimSpace(m[1])
 		}
 	}

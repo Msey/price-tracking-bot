@@ -32,7 +32,8 @@
       "initiatorDomains": [
         "ozon.ru",
         "dns-shop.ru",
-        "market.yandex.ru"
+        "market.yandex.ru",
+        "wildberries.ru"
       ],
       "resourceTypes": ["image", "media", "font", "ping"]
     }

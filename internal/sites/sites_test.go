@@ -344,6 +344,41 @@ func TestParseOzonCanonicalHasNoUserPayload(t *testing.T) {
 	}
 }
 
+func TestParseWildberries(t *testing.T) {
+	const (
+		canonical = "https://www.wildberries.ru/catalog/949425394/detail.aspx"
+		key       = "949425394"
+	)
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"обычная ссылка", "https://www.wildberries.ru/catalog/949425394/detail.aspx"},
+		{"без detail.aspx", "https://www.wildberries.ru/catalog/949425394"},
+		{"со слешем", "https://www.wildberries.ru/catalog/949425394/"},
+		{"без www", "https://wildberries.ru/catalog/949425394/detail.aspx"},
+		{"query отбрасывается", "https://www.wildberries.ru/catalog/949425394/detail.aspx?targetUrl=GP&size=1"},
+		{"внутри текста", "держи https://www.wildberries.ru/catalog/949425394 нормальная цена?"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, err := Parse(tt.in)
+			if err != nil {
+				t.Fatalf("Parse(%q) вернул ошибку: %v", tt.in, err)
+			}
+			if ref.Site != Wildberries {
+				t.Errorf("Site = %q, ожидался %q", ref.Site, Wildberries)
+			}
+			if ref.ExternalKey != key {
+				t.Errorf("ExternalKey = %q, ожидался %q", ref.ExternalKey, key)
+			}
+			if ref.URL != canonical {
+				t.Errorf("URL = %q, ожидался канон %q", ref.URL, canonical)
+			}
+		})
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -354,7 +389,9 @@ func TestParseErrors(t *testing.T) {
 		{"просто текст", "привет, найди мне ноутбук", ErrNotALink},
 		{"не http", "ftp://www.dns-shop.ru/product/9ee3a4f41358d9cb/x/", ErrNotALink},
 		{"неизвестный магазин", "https://example.com/product/123/", ErrUnknownSite},
-		{"wildberries пока не умеем", "https://www.wildberries.ru/catalog/12345/detail.aspx", ErrNotSupported},
+		{"категория wildberries", "https://www.wildberries.ru/catalog/elektronika/smartfony", ErrNotAProduct},
+		{"короткий id wildberries", "https://www.wildberries.ru/catalog/1234/detail.aspx", ErrNotAProduct},
+		{"главная wildberries", "https://www.wildberries.ru/", ErrNotAProduct},
 		{"главная ozon", "https://www.ozon.ru/", ErrNotAProduct},
 		{"короткий код ozon /t/", "https://ozon.ru/t/ab", ErrNotAProduct},
 		{"категория ozon", "https://www.ozon.ru/category/germetiki-12345/", ErrNotAProduct},

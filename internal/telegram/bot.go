@@ -16,11 +16,11 @@ import (
 
 	"github.com/Msey/price-tracking-bot/internal/config"
 	"github.com/Msey/price-tracking-bot/internal/diaglog"
-	"github.com/Msey/price-tracking-bot/internal/wait"
 	"github.com/Msey/price-tracking-bot/internal/money"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
+	"github.com/Msey/price-tracking-bot/internal/wait"
 )
 
 const (
@@ -35,14 +35,14 @@ const (
 
 var (
 	errOffline = errors.New("telegram: нет связи, уведомление отложено")
-	helpIntro = `Я слежу за ценами на DNS, Яндекс.Маркете и Ozon.
+	helpIntro  = `Я слежу за ценами на DNS, Яндекс.Маркете, Wildberries и Ozon.
 
 Пришлите ссылку на карточку товара. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент.
 
 /list — ваши ссылки
 /del номер — снять ссылку
 `
-	helpShops = "Ozon проверяю каждые 20 мин, DNS и Маркет — раз в день."
+	helpShops = "Ozon проверяю каждые 20 мин, DNS, Маркет и Wildberries — раз в день."
 )
 
 func helpFor(unlimited bool) string {
@@ -485,11 +485,11 @@ func explainParseError(err error) string {
 	case errors.Is(err, sites.ErrNotSupported):
 		name := strings.TrimPrefix(err.Error(), sites.ErrNotSupported.Error()+": ")
 		return "Этот магазин я пока не умею: " + html.EscapeString(name) +
-			".\nСейчас работают DNS, Яндекс.Маркет и Ozon."
+			".\nСейчас работают DNS, Яндекс.Маркет, Wildberries и Ozon."
 	case errors.Is(err, sites.ErrUnknownSite):
-		return "Не узнаю этот магазин. Сейчас работают DNS, Яндекс.Маркет и Ozon."
+		return "Не узнаю этот магазин. Сейчас работают DNS, Яндекс.Маркет, Wildberries и Ozon."
 	case errors.Is(err, sites.ErrNotAProduct):
-		return "Похоже, это не карточка товара. Нужна ссылка на товар DNS, Яндекс.Маркета или Ozon."
+		return "Похоже, это не карточка товара. Нужна ссылка на товар DNS, Яндекс.Маркета, Wildberries или Ozon."
 	default:
 		return "Это не похоже на ссылку. Пришлите адрес карточки товара."
 	}
@@ -540,4 +540,3 @@ func formatRetry(d time.Duration) string {
 		return fmt.Sprintf("%d с", s)
 	}
 }
-

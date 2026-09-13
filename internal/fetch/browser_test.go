@@ -155,6 +155,13 @@ func TestSameShopURL(t *testing.T) {
 	if !sameShopURL(market, "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913?nid=1") {
 		t.Fatal("market с query")
 	}
+	wb := "https://www.wildberries.ru/catalog/949425394/detail.aspx"
+	if !sameShopURL(wb, "https://www.wildberries.ru/catalog/949425394/detail.aspx?targetUrl=GP") {
+		t.Fatal("wildberries с query")
+	}
+	if !sameShopURL(wb, "https://wildberries.ru/catalog/949425394") {
+		t.Fatal("wildberries без www")
+	}
 	if sameShopURL(ozon, "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/") {
 		t.Fatal("чужой магазин")
 	}
@@ -168,6 +175,7 @@ func TestSameShopURL(t *testing.T) {
 		"https://evil-ozon.ru.attacker.net/product/1",
 		"https://notmarket.yandex.ru.example.com/card/1",
 		"https://dns-shop.ru.example.com/product/1",
+		"https://wildberries.ru.example.com/catalog/1",
 	} {
 		if sameShopURL(ozon, spoof) {
 			t.Errorf("%s не должен считаться магазином", spoof)
@@ -199,7 +207,7 @@ func TestManifestBlocksHeavyMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	rs := string(rules)
-	for _, want := range []string{`"block"`, `"image"`, `"media"`, `"font"`, "smartcaptcha", "px-cdn.net"} {
+	for _, want := range []string{`"block"`, `"image"`, `"media"`, `"font"`, "smartcaptcha", "px-cdn.net", "wildberries.ru"} {
 		if !strings.Contains(rs, want) {
 			t.Errorf("в rules.json нет %s", want)
 		}
@@ -220,6 +228,9 @@ func TestExtractTakesPriceEarly(t *testing.T) {
 	}
 	if !strings.Contains(s, "банками ozon") {
 		t.Fatal("нужен ценник с Ozon банком, не первый крупный")
+	}
+	if !strings.Contains(s, "кошельк") {
+		t.Fatal("нужен ценник с WB Кошельком, не цена без кошелька")
 	}
 	if !strings.Contains(s, "6000") {
 		t.Fatal("без подписи банка нужен запасной ценник из webPrice, иначе вкладка висит минуту")

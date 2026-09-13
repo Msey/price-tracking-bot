@@ -1,9 +1,9 @@
-// Дублирует селекторы из dns.go / market.go / ozon.go: страницу читает
-// расширение в обычном Chrome, без CDP — иначе Ozon показывает
-// «Похоже, нет соединения».
+// Дублирует селекторы из dns.go / market.go / ozon.go / wildberries.go:
+// страницу читает расширение в обычном Chrome, без CDP — иначе Ozon
+// показывает «Похоже, нет соединения».
 // Скрипт на document_end: цена уходит, как только нужный узел появился
 // в DOM, не дожидаясь картинок и idle. На Ozon ждём ценник
-// «с Ozon Картой» / «с банками Ozon банка», а не первый крупный число.
+// «с Ozon Картой» / «с банками Ozon банка», на Wildberries — «с WB Кошельком».
 
 function ldjson() {
   var scripts = document.querySelectorAll('script[type="application/ld+json"]');
@@ -304,6 +304,105 @@ function extractOzon() {
   };
 }
 
+function wbWalletLabel(s) {
+  s = String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  return s.indexOf('кошельк') !== -1;
+}
+
+function nearestWBHeadline(el) {
+  var n = el;
+  for (var up = 0; up < 8 && n; up++) {
+    var sib = n.previousElementSibling;
+    while (sib) {
+      var fromSib = isolatePrice(nodeText(sib));
+      if (fromSib) {
+        return fromSib;
+      }
+      if (sib.tagName && sib.tagName.toLowerCase() === 'h2') {
+        fromSib = isolateHeadlinePrice(nodeText(sib));
+        if (fromSib) {
+          return fromSib;
+        }
+      }
+      var h = sib.querySelector ? sib.querySelector('h2, .price-block__wallet-price') : null;
+      var fromH = isolateHeadlinePrice(nodeText(h));
+      if (fromH) {
+        return fromH;
+      }
+      sib = sib.previousElementSibling;
+    }
+    var fromSelf = isolateHeadlinePrice(nodeText(n));
+    if (n.tagName && n.tagName.toLowerCase() === 'h2' && fromSelf) {
+      return fromSelf;
+    }
+    n = n.parentElement;
+  }
+  return '';
+}
+
+function wbWalletPrice() {
+  var roots = [];
+  var block = document.querySelector('.product-page__price-block, .price-block');
+  if (block) {
+    roots.push(block);
+  }
+  if (document.body) {
+    roots.push(document.body);
+  }
+  for (var r = 0; r < roots.length; r++) {
+    var nodes = roots[r].querySelectorAll('span, div, p, a, label, h2, button');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = nodeText(nodes[i]);
+      if (t.length < 4 || t.length > 80 || !wbWalletLabel(t)) {
+        continue;
+      }
+      var price = isolatePrice(nearestWBHeadline(nodes[i]));
+      if (!price) {
+        price = isolatePrice(t);
+      }
+      if (price) {
+        return price;
+      }
+    }
+  }
+  var wallet = document.querySelector('.price-block__wallet-price');
+  if (wallet) {
+    var fromWallet = isolatePrice(nodeText(wallet));
+    if (fromWallet) {
+      return fromWallet;
+    }
+  }
+  var finalEl = document.querySelector('.product-page__price-block ins.price-block__final-price, .price-block ins.price-block__final-price');
+  if (finalEl) {
+    var fromFinal = isolatePrice(nodeText(finalEl));
+    if (fromFinal) {
+      return fromFinal;
+    }
+  }
+  return '';
+}
+
+function extractWB() {
+  var title = document.title || '';
+  var body = haystack();
+  var low = body.toLowerCase();
+  var css = wbWalletPrice();
+  var h1 = document.querySelector('h1');
+  var blocked = low.indexOf('подозрительная активность') !== -1
+    || low.indexOf('новая попытка через') !== -1
+    || low.indexOf('проверяем браузер') !== -1;
+  if (!blocked && !css) {
+    window.scrollTo(0, 480);
+  }
+  return {
+    blocked: blocked,
+    ldjson: ldjson(),
+    cssPrice: css,
+    name: h1 ? (h1.textContent || '').trim() : '',
+    title: title
+  };
+}
+
 function extract() {
   var host = (location.hostname || '').toLowerCase();
   if (host.indexOf('dns-shop') !== -1) {
@@ -314,6 +413,9 @@ function extract() {
   }
   if (host.indexOf('market.yandex') !== -1) {
     return extractMarket();
+  }
+  if (host.indexOf('wildberries') !== -1) {
+    return extractWB();
   }
   return { title: document.title || '' };
 }

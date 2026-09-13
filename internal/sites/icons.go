@@ -11,6 +11,9 @@ var ozonPNG []byte
 //go:embed icons/yandex_market.png
 var yandexMarketPNG []byte
 
+//go:embed icons/wildberries.png
+var wildberriesPNG []byte
+
 // IconPNG возвращает PNG-иконку магазина, если она есть.
 func IconPNG(s Site) []byte {
 	switch s {
@@ -20,6 +23,8 @@ func IconPNG(s Site) []byte {
 		return ozonPNG
 	case YandexMarket:
 		return yandexMarketPNG
+	case Wildberries:
+		return wildberriesPNG
 	default:
 		return nil
 	}
@@ -27,5 +32,5 @@ func IconPNG(s Site) []byte {
 
 // SitesWithIcons — магазины, для которых есть картинка в списке.
 func SitesWithIcons() []Site {
-	return []Site{DNS, Ozon, YandexMarket}
+	return []Site{DNS, Ozon, YandexMarket, Wildberries}
 }

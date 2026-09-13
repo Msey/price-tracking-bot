@@ -323,8 +323,12 @@ func (e *extBridge) noteOzonPrice(j *extJob, msg extResult) {
 func (e *extBridge) noteChallenge(bits pageBits) {
 	title := strings.TrimSpace(bits.Title)
 	msg := "Нужно пройти капчу в окне Chrome"
-	if ozonInterstitial(bits) {
+	if antibotWall(bits) {
 		msg = "Нажмите «Обновить страницу» в окне Chrome"
+		low := strings.ToLower(title)
+		if strings.Contains(low, "подозрительная") || title == "..." {
+			msg = "Подождите, пока Wildberries снимет защиту, или обновите страницу"
+		}
 	}
 	if title != "" {
 		msg += " · " + title

@@ -19,7 +19,8 @@ function isShopURL(u) {
   u = (u || '').toLowerCase();
   return u.indexOf('dns-shop') !== -1
     || u.indexOf('ozon.ru') !== -1
-    || u.indexOf('market.yandex') !== -1;
+    || u.indexOf('market.yandex') !== -1
+    || u.indexOf('wildberries.ru') !== -1;
 }
 
 function isEmptyTab(u) {

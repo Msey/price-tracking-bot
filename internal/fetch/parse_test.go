@@ -152,8 +152,8 @@ func TestHardBlockedTitle(t *testing.T) {
 	if !needsHuman(pageBits{Title: "Похоже, нет соединения"}) {
 		t.Fatal("заглушка Ozon должна ждать нажатия «Обновить страницу»")
 	}
-	if !ozonInterstitial(pageBits{Blocked: true}) {
-		t.Fatal("blocked — заглушка Ozon")
+	if !antibotWall(pageBits{Blocked: true}) {
+		t.Fatal("blocked — заглушка антибота")
 	}
 }
 

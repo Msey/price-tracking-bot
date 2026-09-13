@@ -97,6 +97,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 		string(sites.DNS):          fetch.NewDNS(shopOpt),
 		string(sites.YandexMarket): fetch.NewMarket(shopOpt),
 		string(sites.Ozon):         fetch.NewOzon(shopOpt),
+		string(sites.Wildberries):  fetch.NewWildberries(shopOpt),
 	}, bot, tracker.Config{
 		FetchGap:     cfg.FetchGap,
 		PerCycle:     cfg.FetchPerCycle,
@@ -124,6 +125,7 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 		"check_dns", sites.DNS.CheckInterval(),
 		"check_ozon", sites.Ozon.CheckInterval(),
 		"check_yandex", sites.YandexMarket.CheckInterval(),
+		"check_wildberries", sites.Wildberries.CheckInterval(),
 		"fetch_gap", cfg.FetchGap,
 		"per_cycle", cfg.FetchPerCycle,
 		"city", cfg.DefaultCity,

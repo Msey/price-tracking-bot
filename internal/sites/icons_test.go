@@ -7,7 +7,7 @@ import (
 )
 
 func TestIconPNGKnownShops(t *testing.T) {
-	for _, site := range []Site{DNS, Ozon, YandexMarket} {
+	for _, site := range []Site{DNS, Ozon, YandexMarket, Wildberries} {
 		raw := IconPNG(site)
 		if len(raw) == 0 {
 			t.Fatalf("нет иконки %s", site)
@@ -24,7 +24,7 @@ func TestIconPNGKnownShops(t *testing.T) {
 }
 
 func TestIconPNGUnknown(t *testing.T) {
-	if IconPNG("nope") != nil || IconPNG(Wildberries) != nil {
+	if IconPNG("nope") != nil {
 		t.Fatal("у неизвестного сайта иконки быть не должно")
 	}
 }

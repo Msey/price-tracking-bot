@@ -10,7 +10,9 @@
     "*://ozon.ru/*",
     "*://*.dns-shop.ru/*",
     "*://*.market.yandex.ru/*",
-    "*://market.yandex.ru/*"
+    "*://market.yandex.ru/*",
+    "*://*.wildberries.ru/*",
+    "*://wildberries.ru/*"
   ],
   "declarative_net_request": {
     "rule_resources": [
@@ -31,7 +33,9 @@
         "*://ozon.ru/*",
         "*://*.dns-shop.ru/*",
         "*://*.market.yandex.ru/*",
-        "*://market.yandex.ru/*"
+        "*://market.yandex.ru/*",
+        "*://*.wildberries.ru/*",
+        "*://wildberries.ru/*"
       ],
       "js": ["extract.js"],
       "run_at": "document_end",

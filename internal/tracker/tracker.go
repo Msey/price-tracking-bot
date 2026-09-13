@@ -14,9 +14,9 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/diaglog"
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/sites"
-	"github.com/Msey/price-tracking-bot/internal/wait"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 	"github.com/Msey/price-tracking-bot/internal/view"
+	"github.com/Msey/price-tracking-bot/internal/wait"
 )
 
 // Fetcher ходит за ценой. Paused — предохранитель магазина: без него
@@ -182,6 +182,7 @@ func (t *Tracker) Run(ctx context.Context) {
 		"dns", siteCheckInterval(string(sites.DNS)),
 		"ozon", siteCheckInterval(string(sites.Ozon)),
 		"yandex_market", siteCheckInterval(string(sites.YandexMarket)),
+		"wildberries", siteCheckInterval(string(sites.Wildberries)),
 		"gap", t.cfg.FetchGap,
 		"per_cycle", t.cfg.PerCycle,
 		"startup_delay", t.cfg.StartupDelay,
@@ -485,4 +486,3 @@ func formatCountdown(d time.Duration) string {
 		return fmt.Sprintf("%d с", sec)
 	}
 }
-
