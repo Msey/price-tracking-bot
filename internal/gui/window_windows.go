@@ -16,7 +16,6 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 	a.logBtn = newThemeButton("Логи: выкл", false, chrome, a.toggleDiagLog)
 	a.distinctBtn = newThemeButton("Distinct: выкл", false, chrome, a.toggleDistinct)
 	refreshBtn := newThemeButton("Обновить", false, chrome, a.refreshClicked)
-	folderBtn := newThemeButton("Папка с данными", false, chrome, a.openDataFolder)
 	a.header = newHeaderBand(t)
 
 	var canvas *walk.CustomWidget
@@ -50,7 +49,6 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 					a.logBtn.cell(118),
 					a.distinctBtn.cell(128),
 					refreshBtn.cell(108),
-					folderBtn.cell(156),
 				},
 			},
 			ui.CustomWidget{
@@ -70,7 +68,6 @@ func (a *app) buildWindow(t theme, icon *walk.Icon, keep func(walk.Disposable)) 
 	a.logBtn.attach()
 	a.distinctBtn.attach()
 	refreshBtn.attach()
-	folderBtn.attach()
 	a.updateCheckUI()
 	if a.setLogEnabled == nil && a.logBtn != nil {
 		a.logBtn.SetVisible(false)
@@ -115,9 +112,6 @@ func (a *app) buildTray(opt Options) error {
 		}
 	}
 	if _, err := ni.addAction("Обновить список", a.refreshClicked); err != nil {
-		return err
-	}
-	if _, err := ni.addAction("Папка с данными", a.openDataFolder); err != nil {
 		return err
 	}
 	if a.setLogEnabled != nil {

@@ -9,7 +9,7 @@ import (
 
 func TestForgetDeadTrayIconsDoesNotPanic(t *testing.T) {
 	forgetDeadTrayIcons()
-	purgeOurNotifyIconSettings()
+	promoteOurNotifyIcon()
 	deleteGUIDIcon()
 }
 

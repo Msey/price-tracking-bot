@@ -70,7 +70,6 @@ func newTrayIcon(hwnd win.HWND, hicon win.HICON, onLeft func()) (*trayIcon, erro
 		return nil, fmt.Errorf("нет окна для иконки трея")
 	}
 	forgetDeadTrayIcons()
-	purgeOurNotifyIconSettings()
 	deleteGUIDIcon()
 
 	menu := win.CreatePopupMenu()
@@ -218,9 +217,7 @@ func (t *trayIcon) showInfo(title, info string) error {
 }
 
 func (t *trayIcon) add() error {
-	nid := t.data(win.NIF_MESSAGE | win.NIF_ICON | win.NIF_TIP | win.NIF_STATE | win.NIF_SHOWTIP)
-	nid.DwState = win.NIS_HIDDEN
-	nid.DwStateMask = win.NIS_HIDDEN
+	nid := t.data(win.NIF_MESSAGE | win.NIF_ICON | win.NIF_TIP | win.NIF_SHOWTIP)
 	nid.UCallbackMessage = trayMessageID
 	nid.HIcon = t.hicon
 	putUTF16(nid.SzTip[:], t.tooltip)
@@ -234,7 +231,21 @@ func (t *trayIcon) add() error {
 	if !win.Shell_NotifyIcon(win.NIM_SETVERSION, nid) {
 		return fmt.Errorf("Shell_NotifyIcon version")
 	}
+	t.visible = true
+	promoteOurNotifyIcon()
+	return nil
+}
+
+func (t *trayIcon) ensureShown() error {
+	if t == nil || t.hwnd == 0 {
+		return nil
+	}
 	t.visible = false
+	if err := t.setVisible(true); err != nil {
+		t.readd()
+		return t.setVisible(true)
+	}
+	promoteOurNotifyIcon()
 	return nil
 }
 
@@ -453,7 +464,7 @@ func windowClass(hwnd win.HWND) string {
 	return syscall.UTF16ToString(buf[:n])
 }
 
-func purgeOurNotifyIconSettings() {
+func promoteOurNotifyIcon() {
 	self, err := os.Executable()
 	if err != nil {
 		return
@@ -468,15 +479,14 @@ func purgeOurNotifyIconSettings() {
 		return
 	}
 	for _, name := range names {
-		sub, err := registry.OpenKey(root, name, registry.QUERY_VALUE)
+		sub, err := registry.OpenKey(root, name, registry.QUERY_VALUE|registry.SET_VALUE)
 		if err != nil {
 			continue
 		}
 		path, _, err := sub.GetStringValue("ExecutablePath")
-		sub.Close()
-		if err != nil || !isOurNotifyIconPath(path, self) {
-			continue
+		if err == nil && isOurNotifyIconPath(path, self) {
+			_ = sub.SetDWordValue("IsPromoted", 1)
 		}
-		_ = registry.DeleteKey(root, name)
+		sub.Close()
 	}
 }

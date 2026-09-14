@@ -142,7 +142,10 @@ func createFontForDPI(font *walk.Font, dpi int) (win.HFONT, error) {
 	if err != nil {
 		return 0, err
 	}
-	copy(lf.LfFaceName[:], name)
+	n := copy(lf.LfFaceName[:], name)
+	if n == len(lf.LfFaceName) {
+		lf.LfFaceName[n-1] = 0
+	}
 	h := win.CreateFontIndirect(&lf)
 	if h == 0 {
 		return 0, syscall.EINVAL

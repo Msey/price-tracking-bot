@@ -136,7 +136,6 @@ func run(log *slog.Logger, logs *diaglog.Switch) error {
 		go bot.Start(ctx)
 		err := gui.Run(ctx, gui.Options{
 			Store:         store,
-			DataPath:      cfg.DatabasePath,
 			Log:           log,
 			StartHidden:   startHiddenFromArgs(os.Args[1:]),
 			BotUsername:   bot.Username(),

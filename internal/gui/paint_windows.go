@@ -67,12 +67,27 @@ func (b *board) paintRow(canvas *walk.Canvas, i int, m boardMetrics, width, y in
 	titleBox := walk.Rectangle{X: textX, Y: row.Y + m.pad, Width: row.X + row.Width - textX - m.pad - m.priceW, Height: m.titleH}
 	priceBox := walk.Rectangle{X: row.X + row.Width - m.pad - m.priceW, Y: row.Y + m.pad, Width: m.priceW, Height: m.titleH}
 	metaBox := walk.Rectangle{X: textX, Y: row.Y + m.pad + m.titleH, Width: row.X + row.Width - textX - m.pad, Height: m.metaH}
+	if titleBox.Width < 0 {
+		titleBox.Width = 0
+	}
+	if priceBox.Width < 0 {
+		priceBox.Width = 0
+	}
+	if metaBox.Width < 0 {
+		metaBox.Width = 0
+	}
 
 	// Заголовок теплее белого, но светлее золота цены и мета-строки,
 	// иначе имя сливается с остальным текстом.
-	_ = canvas.DrawTextPixels(item.Title, b.titleFont, colorTitle, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
-	_ = canvas.DrawTextPixels(item.Price, b.priceFont, colorGold, priceBox, walk.TextRight|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
-	_ = canvas.DrawTextPixels(rowMeta(item), b.metaFont, colorMuted, metaBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
+	if titleBox.Width > 0 {
+		_ = canvas.DrawTextPixels(item.Title, b.titleFont, colorTitle, titleBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
+	}
+	if priceBox.Width > 0 {
+		_ = canvas.DrawTextPixels(item.Price, b.priceFont, colorGold, priceBox, walk.TextRight|walk.TextVCenter|walk.TextSingleLine|walk.TextNoPrefix)
+	}
+	if metaBox.Width > 0 {
+		_ = canvas.DrawTextPixels(rowMeta(item), b.metaFont, colorMuted, metaBox, walk.TextLeft|walk.TextVCenter|walk.TextEndEllipsis|walk.TextSingleLine|walk.TextNoPrefix)
+	}
 
 	b.paintChart(canvas, i, m.chartRect(row), m)
 	b.paintTrash(canvas, m.trashRect(row), i == b.hover && b.hoverTrash)

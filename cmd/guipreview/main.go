@@ -54,7 +54,6 @@ func run(log *slog.Logger) error {
 	logs := &diaglog.Switch{}
 	return gui.Run(runCtx, gui.Options{
 		Store:         store,
-		DataPath:      dir,
 		Log:           log,
 		LogEnabled:    logs.Enabled,
 		SetLogEnabled: logs.Set,

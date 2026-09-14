@@ -20,6 +20,27 @@ func TestClipStatusFitsHeader(t *testing.T) {
 	}
 }
 
+func TestClipBounds(t *testing.T) {
+	if clip("abc", 0) != "" || clip("abc", -1) != "" {
+		t.Fatal("n<=0 должен давать пустую строку")
+	}
+	if clip("abc", 3) != "abc" || clip("абв", 3) != "абв" {
+		t.Fatal("строка влезает целиком")
+	}
+	if got := clip("abcd", 3); got != "ab…" {
+		t.Fatalf("обрезка ASCII: %q", got)
+	}
+	if got := clip("абвг", 3); got != "аб…" {
+		t.Fatalf("обрезка рун: %q", got)
+	}
+	if clip("я", 1) != "я" {
+		t.Fatal("один символ влезает")
+	}
+	if clip("аб", 1) != "…" {
+		t.Fatal("n=1 и длиннее — только многоточие")
+	}
+}
+
 func TestPerMonitorDPIContext(t *testing.T) {
 	if dpiAwarenessContextPerMonitorV2 != ^uintptr(3) {
 		t.Fatalf("PerMonitorV2 должен быть HANDLE(-4), иначе Windows растянет окно")
@@ -176,6 +197,38 @@ func TestDisposeMeasureNil(t *testing.T) {
 	var b board
 	b.disposeMeasure()
 	b.disposeMeasure()
+}
+
+func TestRebuildSeriesDropsOldRows(t *testing.T) {
+	b := &board{}
+	b.setItems([]Item{
+		{Samples: []Sample{{Price: 1}, {Price: 2}}},
+		{Samples: []Sample{{Price: 3}}},
+	})
+	if len(b.series) != 2 || cap(b.series) < 2 {
+		t.Fatalf("len=%d cap=%d", len(b.series), cap(b.series))
+	}
+	b.setItems([]Item{{Samples: []Sample{{Price: 9}}}})
+	if len(b.series) != 1 {
+		t.Fatalf("после сжатия len=%d", len(b.series))
+	}
+	if cap(b.series) > 1 {
+		tail := b.series[:cap(b.series)][1]
+		if tail.prices != nil || tail.samples != nil {
+			t.Fatalf("хвост series должен быть обнулён: %+v", tail)
+		}
+	}
+}
+
+func TestHideToTrayNilWindow(t *testing.T) {
+	a := &app{log: slog.Default()}
+	a.hideToTray()
+}
+
+func TestOpenURLEmpty(t *testing.T) {
+	openURL("")
+	openURL("   ")
+	startDetached("")
 }
 
 func TestMeasureLineEmpty(t *testing.T) {

@@ -21,12 +21,11 @@ import (
 
 type app struct {
 	store         *storage.Store
-	dataPath      string
 	log           *slog.Logger
 	mw            *walk.MainWindow
-	board  *board
-	header *headerBand
-	ni     *trayIcon
+	board         *board
+	header        *headerBand
+	ni            *trayIcon
 	items         []Item
 	allowQuit     bool
 	loaded        bool
@@ -89,7 +88,6 @@ func Run(ctx context.Context, opt Options) error {
 
 	a := &app{
 		store:         opt.Store,
-		dataPath:      opt.DataPath,
 		log:           opt.Log,
 		openInChrome:  opt.OpenInChrome,
 		checkNow:      opt.CheckNow,
@@ -98,6 +96,7 @@ func Run(ctx context.Context, opt Options) error {
 		logEnabled:    opt.LogEnabled,
 		setLogEnabled: opt.SetLogEnabled,
 		board:         newBoard(th),
+		checkCtx:      ctx,
 	}
 	a.board.onOpen = a.openProduct
 	a.board.onDelete = a.deleteItem
@@ -117,7 +116,6 @@ func Run(ctx context.Context, opt Options) error {
 	keep(disposeFunc(func() { ni.Dispose() }))
 	a.ni = ni
 	_ = ni.setToolTip("Трекинг цен")
-	_ = ni.setVisible(true)
 	if err := a.buildTray(opt); err != nil {
 		return err
 	}
@@ -126,7 +124,6 @@ func Run(ctx context.Context, opt Options) error {
 	go a.watchCancel(ctx)
 	go a.poll(ctx)
 
-	a.checkCtx = ctx
 	a.refresh(false)
 	a.syncDiagLogUI()
 	a.syncDistinctUI()
@@ -144,10 +141,14 @@ func Run(ctx context.Context, opt Options) error {
 
 func (a *app) deleteItem(it Item) {
 	a.log.Info("удаление товара из окна", "product_id", it.ProductID, "title", it.Title)
-	msg := fmt.Sprintf("Снять «%s» с отслеживания?", it.Title)
+	title := clip(it.Title, 80)
+	if title == "" {
+		title = "товар"
+	}
+	msg := fmt.Sprintf("Снять «%s» с отслеживания?", title)
 	if it.Watchers > 1 {
 		msg = fmt.Sprintf("«%s» отслеживают %d %s. Снять у всех?",
-			it.Title, it.Watchers, view.RuPlural(it.Watchers, "человек", "человека", "человек"))
+			title, it.Watchers, view.RuPlural(it.Watchers, "человек", "человека", "человек"))
 	}
 	if a.mw != nil && walk.MsgBox(a.mw, "Трекинг цен", msg, walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
 		return
@@ -313,13 +314,34 @@ func (a *app) updateCheckUI() {
 }
 
 func (a *app) hideToTray() {
+	if a.mw == nil {
+		return
+	}
+	// Свёрнутое окно всё ещё Visible: его надо спрятать. Повторный заход
+	// после Hide (SizeChanged) только проверяет иконку, без второго лога.
+	if !a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
+		if a.ni != nil {
+			if err := a.ni.ensureShown(); err != nil {
+				a.log.Warn("иконка трея не показалась", "error", err)
+			}
+		}
+		return
+	}
 	a.log.Info("окно спрятано в трей")
 	a.mw.Hide()
+	if a.ni != nil {
+		if err := a.ni.ensureShown(); err != nil {
+			a.log.Warn("иконка трея не показалась", "error", err)
+		}
+	}
 }
 
 func (a *app) showWindow() {
 	a.log.Info("окно открыто из трея")
 	a.onUI(func() {
+		if a.mw == nil {
+			return
+		}
 		a.mw.Show()
 		win.ShowWindow(a.mw.Handle(), win.SW_RESTORE)
 		win.SetForegroundWindow(a.mw.Handle())
@@ -340,19 +362,6 @@ func (a *app) quit() {
 func (a *app) watchCancel(ctx context.Context) {
 	<-ctx.Done()
 	a.onUI(a.quit)
-}
-
-func (a *app) openDataFolder() {
-	a.log.Info("открыта папка с данными")
-	path := a.dataPath
-	if path == "" {
-		path = "bot.db"
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return
-	}
-	_ = exec.Command(systemExe("explorer.exe"), filepath.Dir(abs)).Start()
 }
 
 // openProduct открывает карточку тем же Chrome, что и замер. В системный
@@ -376,7 +385,20 @@ func openURL(raw string) {
 		return
 	}
 	slog.Info("открываю ссылку", "url", raw)
-	_ = exec.Command(systemExe(`System32\rundll32.exe`), "url.dll,FileProtocolHandler", raw).Start()
+	startDetached(systemExe(`System32\rundll32.exe`), "url.dll,FileProtocolHandler", raw)
+}
+
+// startDetached запускает процесс и ждёт его в фоне: без Wait Windows
+// держит handle, и каждый щелчок по ссылке оставлял бы его до выхода.
+func startDetached(name string, args ...string) {
+	if name == "" {
+		return
+	}
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // systemExe собирает путь от %SystemRoot%, а не ищет программу в PATH:
@@ -390,9 +412,15 @@ func systemExe(rel string) string {
 }
 
 func clip(s string, n int) string {
-	if len([]rune(s)) <= n {
-		return s
+	if n <= 0 {
+		return ""
 	}
 	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
 	return string(r[:n-1]) + "…"
 }

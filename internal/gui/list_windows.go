@@ -113,10 +113,15 @@ func (b *board) display(i int) chartSeries {
 }
 
 func (b *board) rebuildSeries() {
-	if cap(b.series) < len(b.items) {
-		b.series = make([]chartSeries, len(b.items))
+	n := len(b.items)
+	if cap(b.series) > n {
+		// Хвост ёмкости иначе держит срезы цен удалённых строк до следующего роста списка.
+		clear(b.series[:cap(b.series)][n:])
+	}
+	if cap(b.series) < n {
+		b.series = make([]chartSeries, n)
 	} else {
-		b.series = b.series[:len(b.items)]
+		b.series = b.series[:n]
 	}
 	for i := range b.items {
 		b.series[i] = chartSeriesOf(b.items[i].Samples, b.distinct)

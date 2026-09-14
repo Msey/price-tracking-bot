@@ -26,15 +26,15 @@ func (a *app) poll(ctx context.Context) {
 			a.onUI(func() {
 				a.updateCheckUI()
 				a.updateStatus()
+				every := 10 * time.Second
+				if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
+					every = 4 * time.Second
+				}
+				if lastRefresh.IsZero() || time.Since(lastRefresh) >= every {
+					lastRefresh = time.Now()
+					a.refresh(true)
+				}
 			})
-			every := 10 * time.Second
-			if a.mw != nil && a.mw.Visible() && !win.IsIconic(a.mw.Handle()) {
-				every = 4 * time.Second
-			}
-			if lastRefresh.IsZero() || time.Since(lastRefresh) >= every {
-				lastRefresh = time.Now()
-				a.refresh(true)
-			}
 		}
 	}
 }
@@ -79,6 +79,9 @@ func (a *app) unchanged(ctx context.Context) bool {
 }
 
 func (a *app) apply(items []Item, err error, notify bool) {
+	if a.closed.Load() {
+		return
+	}
 	if err != nil {
 		a.log.Error("список товаров для окна", "error", err)
 		a.setStatusText("Не удалось прочитать базу")
