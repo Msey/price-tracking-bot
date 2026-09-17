@@ -44,11 +44,11 @@ func TestAddReplyMentionsAlert(t *testing.T) {
 	p := storage.Product{URL: watchURL, Name: "Товар"}
 	ref := sites.Ref{Site: sites.Ozon, URL: watchURL}
 	got := addReply(p, ref, "moscow", true, 1_500_000)
-	if !strings.Contains(got, "Порог") || !strings.Contains(got, money.FormatKopecks(1_500_000)) {
+	if !strings.Contains(got, "Порог") || !strings.Contains(got, money.FormatKopecks(1_500_000)) || !strings.Contains(got, "сниму") {
 		t.Fatalf("новая подписка с порогом: %s", got)
 	}
 	got = addReply(p, ref, "moscow", false, 1_500_000)
-	if !strings.Contains(got, "уже в списке") || !strings.Contains(got, "Порог обновил") {
+	if !strings.Contains(got, "уже в списке") || !strings.Contains(got, "Порог обновил") || !strings.Contains(got, "сниму") {
 		t.Fatalf("повтор с порогом: %s", got)
 	}
 	got = addReply(p, ref, "moscow", true, 0)

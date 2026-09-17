@@ -39,7 +39,7 @@ var (
 
 Пришлите ссылку на карточку DNS, Ozon, Яндекс.Маркета или Wildberries. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент.
 
-Рядом со ссылкой можно указать порог в рублях. Один раз напишу, когда цена станет ниже этого числа.
+Рядом со ссылкой можно указать порог в рублях. Один раз напишу, когда цена станет ниже этого числа. После письма порог сниму.
 
 Пример: https://www.ozon.ru/product/… 15000
 
@@ -47,6 +47,7 @@ var (
 /del номер — снять ссылку
 `
 	helpShops = "Ozon проверяю каждые 20 мин, DNS, Маркет и Wildberries (WB) — раз в день."
+	listEmpty = "Список пуст. Пришлите ссылку на товар, чтобы начать. Рядом можно указать порог в рублях."
 )
 
 func helpFor(unlimited bool) string {
@@ -129,6 +130,15 @@ func (b *Bot) routes() {
 
 	unsub := (&telebot.ReplyMarkup{}).Data("", unsubUnique)
 	b.bot.Handle(&unsub, b.handleUnsubButton)
+	if err := b.bot.SetCommands([]telebot.Command{
+		{Text: "start", Description: "как следить за ценами"},
+		{Text: "help", Description: "как следить за ценами"},
+		{Text: "list", Description: "ваши ссылки"},
+		{Text: "add", Description: "ссылка и необязательный порог в рублях"},
+		{Text: "del", Description: "снять ссылку по номеру из /list"},
+	}); err != nil {
+		b.log.Warn("не обновил команды Telegram", "error", redactTelegram(err.Error()))
+	}
 }
 
 // Start держит связь с Telegram, пока жив контекст: если сети нет,
@@ -291,7 +301,7 @@ func (b *Bot) handleText(c telebot.Context) error {
 		return nil
 	}
 	if !strings.Contains(text, "http://") && !strings.Contains(text, "https://") {
-		return c.Send("Пришлите ссылку на товар или посмотрите /help.", telebot.NoPreview)
+		return c.Send("Пришлите ссылку на товар. Рядом можно указать порог в рублях. Или посмотрите /help.", telebot.NoPreview)
 	}
 	return b.add(c, text)
 }
@@ -371,7 +381,7 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 func addReply(product storage.Product, ref sites.Ref, city string, created bool, alertKopecks int64) string {
 	if !created {
 		return fmt.Sprintf(
-			"Этот товар уже в списке. Порог обновил: %s. Один раз напишу, когда цена станет ниже.",
+			"Этот товар уже в списке. Порог обновил: %s. Один раз напишу, когда цена станет ниже — после письма порог сниму.",
 			html.EscapeString(money.FormatKopecks(alertKopecks)))
 	}
 	msg := fmt.Sprintf(
@@ -380,7 +390,7 @@ func addReply(product storage.Product, ref sites.Ref, city string, created bool,
 		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(city), humanDuration(ref.Site.CheckInterval()),
 	)
 	if alertKopecks > 0 {
-		msg += fmt.Sprintf("\n\nПорог: %s. Один раз напишу, когда цена станет ниже.",
+		msg += fmt.Sprintf("\n\nПорог: %s. Один раз напишу, когда цена станет ниже — после письма порог сниму.",
 			html.EscapeString(money.FormatKopecks(alertKopecks)))
 	}
 	return msg
@@ -424,7 +434,7 @@ func (b *Bot) handleDelete(c telebot.Context) error {
 	}
 	if total == 0 || n > total {
 		if total == 0 {
-			return c.Send("Список пуст. Пришлите ссылку на товар, чтобы начать.", telebot.NoPreview)
+			return c.Send(listEmpty, telebot.NoPreview)
 		}
 		return c.Send(fmt.Sprintf("У вас всего %d товаров. Посмотрите /list.", total), telebot.NoPreview)
 	}
@@ -480,14 +490,14 @@ func (b *Bot) handleUnsubButton(c telebot.Context) error {
 
 func (b *Bot) listContent(ctx context.Context, chatID int64) (string, *telebot.ReplyMarkup, error) {
 	if chatID <= 0 {
-		return "Список пуст. Пришлите ссылку на товар, чтобы начать.", nil, nil
+		return listEmpty, nil, nil
 	}
 	items, err := b.store.ListSubscriptions(ctx, chatID)
 	if err != nil {
 		return "", nil, err
 	}
 	if len(items) == 0 {
-		return "Список пуст. Пришлите ссылку на товар, чтобы начать.", nil, nil
+		return listEmpty, nil, nil
 	}
 
 	markup := &telebot.ReplyMarkup{}
