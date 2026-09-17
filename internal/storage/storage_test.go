@@ -1033,32 +1033,84 @@ func TestPriceAlertIsPerSubscriberAndOnce(t *testing.T) {
 		t.Fatalf("чужой порог в очереди: %+v", pending)
 	}
 
+	bobSub, err := s.SetPriceAlert(ctx, chatBob, p.ID, 2_000_000)
+	if err != nil || bobSub < 1 || bobSub == aliceSub {
+		t.Fatalf("порог Боба: alice=%d bob=%d err=%v", aliceSub, bobSub, err)
+	}
+
 	items, err := s.ListSubscriptions(ctx, chatAlice)
 	if err != nil || len(items) != 1 || items[0].AlertKopecks != 1_500_000 {
 		t.Fatalf("список Алисы без порога: %+v err=%v", items, err)
 	}
 	bobItems, err := s.ListSubscriptions(ctx, chatBob)
-	if err != nil || len(bobItems) != 1 || bobItems[0].AlertKopecks != 0 {
-		t.Fatalf("у Боба появился порог Алисы: %+v err=%v", bobItems, err)
+	if err != nil || len(bobItems) != 1 || bobItems[0].AlertKopecks != 2_000_000 {
+		t.Fatalf("порог Боба: %+v err=%v", bobItems, err)
 	}
 
-	if err := s.MarkAlertFired(ctx, aliceSub); err != nil {
+	if err := s.ClearPriceAlert(ctx, 0); err != nil {
+		t.Errorf("пустой id: %v", err)
+	}
+	if err := s.ClearPriceAlert(ctx, aliceSub); err != nil {
 		t.Fatal(err)
 	}
 	pending, err = s.PendingPriceAlerts(ctx, p.ID)
-	if err != nil || len(pending) != 0 {
-		t.Fatalf("после отправки очередь %v err=%v", pending, err)
+	if err != nil || len(pending) != 1 || pending[0].ChatID != chatBob {
+		t.Fatalf("после сброса Алисы очередь должна быть только Боб: %v err=%v", pending, err)
+	}
+	items, err = s.ListSubscriptions(ctx, chatAlice)
+	if err != nil || len(items) != 1 || items[0].AlertKopecks != 0 {
+		t.Fatalf("у Алисы порог должен пропасть: %+v err=%v", items, err)
+	}
+	bobItems, err = s.ListSubscriptions(ctx, chatBob)
+	if err != nil || len(bobItems) != 1 || bobItems[0].AlertKopecks != 2_000_000 {
+		t.Fatalf("порог Боба задели: %+v err=%v", bobItems, err)
 	}
 
 	if _, err := s.SetPriceAlert(ctx, chatAlice, p.ID, 900_000); err != nil {
 		t.Fatal(err)
 	}
 	pending, err = s.PendingPriceAlerts(ctx, p.ID)
-	if err != nil || len(pending) != 1 || pending[0].Kopecks != 900_000 {
-		t.Fatalf("новый порог должен снова ждать письма: %+v err=%v", pending, err)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("новый порог Алисы снова в очереди вместе с Бобом: %+v err=%v", pending, err)
 	}
 	none, err := s.PendingPriceAlerts(ctx, 0)
 	if err != nil || len(none) != 0 {
 		t.Errorf("без товара: n=%d err=%v", len(none), err)
+	}
+}
+
+func TestMigrateClearsFiredAlertOnly(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	aliceSub, err := s.SetPriceAlert(ctx, chatAlice, p.ID, 1_500_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetPriceAlert(ctx, chatBob, p.ID, 2_000_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET alert_fired = 1 WHERE id = ?`, aliceSub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA user_version = 5`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil || len(alice) != 1 || alice[0].AlertKopecks != 0 {
+		t.Fatalf("сработавший порог Алисы должен зачиститься: %+v err=%v", alice, err)
+	}
+	bob, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil || len(bob) != 1 || bob[0].AlertKopecks != 2_000_000 {
+		t.Fatalf("живой порог Боба задели: %+v err=%v", bob, err)
 	}
 }

@@ -72,6 +72,10 @@ var migrations = []string{
 	// человек на одну карточку разные суммы. alert_fired — уже писали.
 	`ALTER TABLE subscriptions ADD COLUMN alert_kopecks INTEGER NOT NULL DEFAULT 0;`,
 	`ALTER TABLE subscriptions ADD COLUMN alert_fired INTEGER NOT NULL DEFAULT 0;`,
+
+	// 6. Сработавший порог больше не храним: только у той подписки,
+	// которой уже писали. Чужие пороги на тот же товар не трогаем.
+	`UPDATE subscriptions SET alert_kopecks = 0, alert_fired = 0 WHERE alert_fired = 1;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

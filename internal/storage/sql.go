@@ -180,9 +180,11 @@ const (
 		WHERE s.product_id = ? AND s.active = 1
 		  AND s.alert_kopecks > 0 AND s.alert_fired = 0`
 
-	sqlMarkAlertFired = `
-		UPDATE subscriptions SET alert_fired = 1
-		WHERE id = ? AND alert_fired = 0`
+	// Только эта подписка: id уникален, чужой порог на тот же товар не сбросится.
+	sqlClearPriceAlert = `
+		UPDATE subscriptions
+		SET alert_kopecks = 0, alert_fired = 0
+		WHERE id = ?`
 
 	sqlInsertFetchError = `
 		INSERT INTO fetch_errors (product_id, site, kind, message) VALUES (?, ?, ?, ?)`

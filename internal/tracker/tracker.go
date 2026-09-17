@@ -440,8 +440,8 @@ func (t *Tracker) announceAlerts(ctx context.Context, p storage.Product, kopecks
 			t.log.Warn("порог не доставлен", "chat_id", a.ChatID, "product", p.ID, "error", err)
 			continue
 		}
-		if err := t.store.MarkAlertFired(ctx, a.SubscriptionID); err != nil {
-			t.log.Warn("не отметил разовый порог", "sub", a.SubscriptionID, "error", err)
+		if err := t.store.ClearPriceAlert(ctx, a.SubscriptionID); err != nil {
+			t.log.Warn("не зачистил разовый порог", "sub", a.SubscriptionID, "error", err)
 		}
 	}
 	return nil

@@ -361,8 +361,8 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 		return err
 	}
 	if below > 0 && subID > 0 {
-		if err := b.store.MarkAlertFired(ctx, subID); err != nil {
-			b.log.Warn("не отметил разовый порог", "sub", subID, "error", err)
+		if err := b.store.ClearPriceAlert(ctx, subID); err != nil {
+			b.log.Warn("не зачистил разовый порог", "sub", subID, "error", err)
 		}
 	}
 	return nil

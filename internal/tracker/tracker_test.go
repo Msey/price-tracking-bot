@@ -276,6 +276,9 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 	if _, err := store.SetPriceAlert(ctx, 42, p.ID, 9500); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SetPriceAlert(ctx, 43, p.ID, 8500); err != nil {
+		t.Fatal(err)
+	}
 
 	dns := &fakeDNS{price: 10000}
 	notes := &fakeNotify{}
@@ -294,7 +297,7 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	// смена цены — обоим, порог — только тому, кто его задал
+	// смена цены — обоим, порог Алисы (42) — только ей
 	if notes.n != 3 {
 		t.Fatalf("писем %d, ожидалось 3 (два про смену и одно про порог)", notes.n)
 	}
@@ -303,12 +306,20 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 		if strings.Contains(notes.msgs[i], "ниже порога") {
 			alerts++
 			if chat != 42 {
-				t.Fatalf("порог ушёл чужому чату %d", chat)
+				t.Fatalf("первый порог ушёл чужому чату %d", chat)
 			}
 		}
 	}
 	if alerts != 1 {
 		t.Fatalf("писем про порог %d", alerts)
+	}
+	alice, err := store.ListSubscriptions(ctx, 42)
+	if err != nil || len(alice) != 1 || alice[0].AlertKopecks != 0 {
+		t.Fatalf("после письма порог Алисы должен пропасть: %+v err=%v", alice, err)
+	}
+	bob, err := store.ListSubscriptions(ctx, 43)
+	if err != nil || len(bob) != 1 || bob[0].AlertKopecks != 8500 {
+		t.Fatalf("порог Боба задели: %+v err=%v", bob, err)
 	}
 
 	dns.price = 8000
@@ -321,8 +332,12 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 			alerts++
 		}
 	}
-	if alerts != 1 {
-		t.Fatalf("повторно порог не пишем, писем %d", alerts)
+	if alerts != 2 {
+		t.Fatalf("на 8000 должен сработать порог Боба, писем про порог %d", alerts)
+	}
+	bob, err = store.ListSubscriptions(ctx, 43)
+	if err != nil || len(bob) != 1 || bob[0].AlertKopecks != 0 {
+		t.Fatalf("после письма порог Боба должен пропасть: %+v err=%v", bob, err)
 	}
 }
 
@@ -352,6 +367,10 @@ func TestCheckOneFiresAlertOnFirstPriceAlreadyBelow(t *testing.T) {
 	}
 	if notes.n != 1 || !strings.Contains(notes.msgs[0], "ниже порога") {
 		t.Fatalf("первая цена ниже порога — одно письмо про порог, получено %d %v", notes.n, notes.msgs)
+	}
+	left, err := store.ListSubscriptions(ctx, 42)
+	if err != nil || len(left) != 1 || left[0].AlertKopecks != 0 {
+		t.Fatalf("после письма порог должен пропасть: %+v err=%v", left, err)
 	}
 }
 

@@ -329,13 +329,14 @@ func (s *Store) PendingPriceAlerts(ctx context.Context, productID int64) ([]Pric
 	return out, nil
 }
 
-// MarkAlertFired отмечает, что разовое письмо по порогу уже ушло.
-func (s *Store) MarkAlertFired(ctx context.Context, subscriptionID int64) error {
+// ClearPriceAlert снимает разовый порог только с этой подписки. Карточка
+// и пороги остальных подписчиков того же товара остаются.
+func (s *Store) ClearPriceAlert(ctx context.Context, subscriptionID int64) error {
 	if subscriptionID < 1 {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, sqlMarkAlertFired, subscriptionID); err != nil {
-		return fmt.Errorf("storage: отметка порога %d: %w", subscriptionID, err)
+	if _, err := s.db.ExecContext(ctx, sqlClearPriceAlert, subscriptionID); err != nil {
+		return fmt.Errorf("storage: сброс порога %d: %w", subscriptionID, err)
 	}
 	return nil
 }
