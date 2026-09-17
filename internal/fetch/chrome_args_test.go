@@ -8,14 +8,22 @@ import (
 )
 
 func TestShoppingChromeArgsHaveNoDebugger(t *testing.T) {
-	args := shoppingChromeArgs(`C:\data\chrome-plain`, `C:\ext\chrome-ext`, "abcdefghijklmnopabcdefghijklmnop")
+	args := shoppingChromeArgs(`C:\data\chrome-plain`, `C:\ext\chrome-ext`, "abcdefghijklmnopabcdefghijklmnop", true)
 	if hasRemoteDebugging(args) {
 		t.Fatalf("shopping Chrome не должен быть с CDP: %v", args)
 	}
 	found := false
+	foundPos := false
+	foundBg := false
 	for _, a := range args {
 		if strings.HasPrefix(a, "--load-extension=") && strings.Contains(a, "chrome-ext") {
 			found = true
+		}
+		if strings.HasPrefix(a, "--window-position=") {
+			foundPos = true
+		}
+		if a == "--disable-backgrounding-occluded-windows" {
+			foundBg = true
 		}
 		if strings.Contains(a, "ozon.ru") || strings.Contains(a, "dns-shop") || strings.Contains(a, "market.yandex") {
 			t.Fatalf("URL магазина в argv откроет лишнюю вкладку: %s", a)
@@ -26,6 +34,12 @@ func TestShoppingChromeArgsHaveNoDebugger(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ожидался --load-extension: %v", args)
+	}
+	if !foundPos {
+		t.Fatalf("фоновый Chrome должен быть за экраном: %v", args)
+	}
+	if !foundBg {
+		t.Fatal("нужны флаги, чтобы страница за экраном не замирала")
 	}
 	if args[len(args)-1] != "about:blank" {
 		t.Fatalf("старт должен быть about:blank, получено %v", args)
@@ -38,6 +52,15 @@ func TestShoppingChromeArgsHaveNoDebugger(t *testing.T) {
 	}
 	if !foundExcept {
 		t.Fatalf("ожидался --disable-extensions-except: %v", args)
+	}
+}
+
+func TestShoppingChromeArgsForegroundStayOnScreen(t *testing.T) {
+	args := shoppingChromeArgs(`C:\data\chrome-plain`, "", "", false)
+	for _, a := range args {
+		if strings.HasPrefix(a, "--window-position=") {
+			t.Fatalf("щелчок по строке не должен открывать окно за экраном: %s", a)
+		}
 	}
 }
 

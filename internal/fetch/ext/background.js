@@ -62,19 +62,49 @@ async function closeTabsExcept(keepId) {
   }
 }
 
-async function openJob(url) {
+async function openJob(job) {
+  var url = job.url;
+  var focus = job.focus === '1' || job.focus === true;
   var tabs = await chrome.tabs.query({});
   var keep = pickTab(tabs);
   if (keep) {
     try {
-      await chrome.tabs.update(keep.id, { url: url, active: true });
+      await chrome.tabs.update(keep.id, { url: url, active: !!focus });
     } catch (e) {
-      keep = await chrome.tabs.create({ url: url });
+      keep = await chrome.tabs.create({ url: url, active: !!focus });
     }
     await closeTabsExcept(keep.id);
+    await placeWindow(keep.windowId, job);
     return;
   }
-  await chrome.tabs.create({ url: url });
+  keep = await chrome.tabs.create({ url: url, active: !!focus });
+  await placeWindow(keep && keep.windowId, job);
+}
+
+async function placeWindow(windowId, job) {
+  if (!windowId) {
+    return;
+  }
+  var focus = job && (job.focus === '1' || job.focus === true);
+  var update = { focused: !!focus, state: 'normal', width: 1280, height: 900 };
+  if (focus) {
+    update.left = 80;
+    update.top = 80;
+  } else {
+    var left = parseInt(job && job.left, 10);
+    var top = parseInt(job && job.top, 10);
+    if (!isFinite(left)) {
+      left = -2400;
+    }
+    if (!isFinite(top)) {
+      top = -2400;
+    }
+    update.left = left;
+    update.top = top;
+  }
+  try {
+    await chrome.windows.update(windowId, update);
+  } catch (e) {}
 }
 
 async function closeShopTabs() {
@@ -136,7 +166,7 @@ async function loop() {
         continue;
       }
       await applyCity(job);
-      await openJob(job.url);
+      await openJob(job);
     } catch (e) {
       await sleep(1000);
     }

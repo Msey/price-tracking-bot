@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,13 +228,20 @@ func (e *extBridge) handleWaitJob(w http.ResponseWriter, r *http.Request) {
 	defer timer.Stop()
 	for {
 		if j := e.job.Load(); j != nil && j.sent.CompareAndSwap(false, true) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
+			left, top := offscreenOrigin()
+			payload := map[string]string{
 				"url":  j.url,
 				"site": j.site,
 				"city": j.city,
-			})
-			e.log.Info("расширение взяло задачу", "site", j.site, "url", j.url)
+				"left": strconv.Itoa(left),
+				"top":  strconv.Itoa(top),
+			}
+			if j.focus {
+				payload["focus"] = "1"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
+			e.log.Info("расширение взяло задачу", "site", j.site, "url", j.url, "focus", j.focus)
 			return
 		}
 		if e.job.Load() == nil && e.closeReq.CompareAndSwap(true, false) {

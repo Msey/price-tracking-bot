@@ -39,6 +39,7 @@ type extJob struct {
 	url         string
 	site        string
 	city        string
+	focus       bool
 	bits        chan pageBits
 	sent        atomic.Bool
 	notedWait   atomic.Bool
@@ -99,10 +100,11 @@ func (b *Browser) Show(p storage.Product) {
 	defer b.mu.Unlock()
 	b.log.Info("открываю карточку", "site", p.Site, "url", p.URL)
 	j := &extJob{
-		url:  p.URL,
-		site: p.Site,
-		city: p.City,
-		bits: make(chan pageBits, 8),
+		url:   p.URL,
+		site:  p.Site,
+		city:  p.City,
+		focus: true,
+		bits:  make(chan pageBits, 8),
 	}
 	b.job.Store(j)
 	defer b.job.CompareAndSwap(j, nil)
@@ -110,6 +112,7 @@ func (b *Browser) Show(p storage.Product) {
 		b.log.Warn("карточку не открыл", "url", p.URL, "error", err)
 		return
 	}
+	b.reveal()
 	b.poke()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) && !j.sent.Load() {
@@ -155,6 +158,7 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	b.job.Store(j)
 	defer b.job.CompareAndSwap(j, nil)
 	b.human.Store(false)
+	b.wantFocus.Store(false)
 	b.log.Info("задача расширению", "site", p.Site, "url", p.URL, "timeout", timeout)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -174,6 +178,7 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	snap, err := waitForBits(ctx, timeout, j.bits, parse, func(bits pageBits) {
 		b.human.Store(true)
 		b.noteChallenge(bits)
+		b.reveal()
 	}, pol)
 	b.job.CompareAndSwap(j, nil)
 	if err == nil || !b.human.Load() {
@@ -182,8 +187,9 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	return snap, err
 }
 
-// requestClose просит расширение закрыть вкладку. Если человек разбирается
-// с капчей, вкладку оставляем.
+// requestClose просит расширение закрыть вкладку. Окно Chrome не гасим:
+// следующий замер тогда снова вылез бы на передний план. Если человек
+// разбирается с капчей, вкладку тоже оставляем.
 func (b *Browser) requestClose() {
 	b.closeReq.Store(true)
 	b.poke()
@@ -198,7 +204,7 @@ func (b *Browser) requestClose() {
 	if b.human.Load() {
 		return
 	}
-	b.kill()
+	b.demote()
 }
 
 func (b *Browser) ensureLocked(startURL string) error {
@@ -263,7 +269,11 @@ func (b *Browser) launchLocked(extDir, startURL string) error {
 		exceptID = b.extID
 	}
 	b.setExtSeen(make(chan struct{}))
-	if err := b.chromeProc.start(extDir, exceptID); err != nil {
+	background := true
+	if j := b.job.Load(); j != nil && j.focus {
+		background = false
+	}
+	if err := b.chromeProc.start(extDir, exceptID, background); err != nil {
 		return err
 	}
 	b.log.Info("chrome запущен", "profile", b.profileDir, "exe", b.chromePath,

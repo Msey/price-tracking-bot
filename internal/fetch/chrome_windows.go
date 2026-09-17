@@ -39,9 +39,15 @@ Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | ForEach-Object {
 	_ = cmd.Run()
 }
 
-func startChrome(exe, profile, extDir, extID string) (*exec.Cmd, error) {
-	cmd := exec.Command(exe, shoppingChromeArgs(profile, extDir, extID)...)
-	if err := cmd.Start(); err != nil {
+func startChrome(exe, profile, extDir, extID string, background bool) (*exec.Cmd, error) {
+	cmd := exec.Command(exe, shoppingChromeArgs(profile, extDir, extID, background)...)
+	unlock := func() {}
+	if background {
+		unlock = lockForeground()
+	}
+	err := cmd.Start()
+	unlock()
+	if err != nil {
 		return nil, err
 	}
 	return cmd, nil

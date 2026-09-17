@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // chromeProc — процесс Chrome с профилем бота. Профиль отдельный: в личном
@@ -19,6 +20,9 @@ type chromeProc struct {
 	cmd        *exec.Cmd
 	// chromeDead — процесс уже вышел. Ставится из горутины ожидания.
 	chromeDead atomic.Bool
+	// wantFocus — окно нужно человеку (щелчок по строке или капча).
+	// Тогда фоновый сдвиг за экран останавливается.
+	wantFocus atomic.Bool
 }
 
 func (c *chromeProc) alive() bool {
@@ -27,12 +31,16 @@ func (c *chromeProc) alive() bool {
 
 // start чистит следы прошлого запуска и поднимает Chrome с расширением.
 // Адреса карточки среди флагов нет: её открывает расширение.
-func (c *chromeProc) start(extDir, exceptID string) error {
+func (c *chromeProc) start(extDir, exceptID string, background bool) error {
+	c.wantFocus.Store(!background)
 	clearStaleProfileLocks(c.profileDir)
 	markChromeExitedCleanly(c.profileDir)
 	bustExtensionCache(c.profileDir)
+	if background {
+		stashOffscreenPlacement(c.profileDir)
+	}
 
-	cmd, err := startChrome(c.chromePath, c.profileDir, extDir, exceptID)
+	cmd, err := startChrome(c.chromePath, c.profileDir, extDir, exceptID, background)
 	if err != nil {
 		return fmt.Errorf("chrome: запуск: %w", err)
 	}
@@ -42,7 +50,34 @@ func (c *chromeProc) start(extDir, exceptID string) error {
 		_ = cmd.Wait()
 		c.chromeDead.Store(true)
 	}()
+	if background && cmd.Process != nil {
+		pid := uint32(cmd.Process.Pid)
+		go c.holdBackground(pid)
+	}
 	return nil
+}
+
+func (c *chromeProc) holdBackground(pid uint32) {
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.wantFocus.Load() {
+			return
+		}
+		demoteChrome(pid, c.profileDir, 0)
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func (c *chromeProc) reveal() {
+	c.wantFocus.Store(true)
+	revealChromeWithProfile(c.profileDir)
+}
+
+func (c *chromeProc) demote() {
+	if c.wantFocus.Load() {
+		return
+	}
+	demoteChromeWithProfile(c.profileDir)
 }
 
 // kill гасит все процессы Chrome этого профиля. Своего pid недостаточно:
@@ -164,6 +199,72 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// stashOffscreenPlacement пишет в профиль позицию за краем виртуального
+// экрана: иначе Chrome поднимает окно там, где его закрыли в прошлый раз.
+func stashOffscreenPlacement(dir string) {
+	if dir == "" {
+		return
+	}
+	p := filepath.Join(dir, "Default", "Preferences")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return
+	}
+	x, y := offscreenOrigin()
+	out, changed := applyOffscreenPlacement(raw, x, y, chromeWindowW, chromeWindowH)
+	if !changed {
+		return
+	}
+	_ = writeFileAtomic(p, out)
+}
+
+func applyOffscreenPlacement(raw []byte, left, top, width, height int) ([]byte, bool) {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, false
+	}
+	browser, ok := m["browser"].(map[string]any)
+	if !ok {
+		browser = map[string]any{}
+		m["browser"] = browser
+	}
+	place := map[string]any{
+		"left":          float64(left),
+		"top":           float64(top),
+		"right":         float64(left + width),
+		"bottom":        float64(top + height),
+		"maximized":     false,
+		"always_on_top": false,
+	}
+	if cur, ok := browser["window_placement"].(map[string]any); ok && sameWindowPlacement(cur, place) {
+		return nil, false
+	}
+	browser["window_placement"] = place
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func sameWindowPlacement(got, want map[string]any) bool {
+	for _, key := range []string{"left", "top", "right", "bottom", "maximized", "always_on_top"} {
+		if got[key] != want[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func profileInCommandLine(cmd, profile string) bool {
+	if profile == "" || cmd == "" {
+		return false
+	}
+	c := strings.ToLower(strings.ReplaceAll(cmd, `/`, `\`))
+	p := strings.ToLower(strings.ReplaceAll(filepath.Clean(profile), `/`, `\`))
+	return strings.Contains(c, p)
 }
 
 func chromeStartError(profile string, err error) error {

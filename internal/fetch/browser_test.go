@@ -120,6 +120,35 @@ func TestCleanProfileJSONSkipsBrokenFile(t *testing.T) {
 	}
 }
 
+func TestApplyOffscreenPlacement(t *testing.T) {
+	got, changed := applyOffscreenPlacement([]byte(`{"profile":{"name":"bot"}}`), -2400, -1200, 1280, 900)
+	if !changed {
+		t.Fatal("позицию окна нужно записать")
+	}
+	if !strings.Contains(string(got), `"left":-2400`) || !strings.Contains(string(got), `"maximized":false`) {
+		t.Fatalf("placement: %s", got)
+	}
+	if !strings.Contains(string(got), `"name":"bot"`) {
+		t.Fatalf("остальные настройки должны остаться: %s", got)
+	}
+	if _, changed := applyOffscreenPlacement(got, -2400, -1200, 1280, 900); changed {
+		t.Fatal("повторная запись не должна трогать файл")
+	}
+}
+
+func TestProfileInCommandLine(t *testing.T) {
+	cmd := `"C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir=C:\data\chrome-plain --no-first-run`
+	if !profileInCommandLine(cmd, `C:\data\chrome-plain`) {
+		t.Fatal("свой профиль")
+	}
+	if profileInCommandLine(cmd, `C:\Users\me\AppData\Local\Google\Chrome\User Data`) {
+		t.Fatal("чужой профиль")
+	}
+	if profileInCommandLine("", `C:\data\chrome-plain`) || profileInCommandLine(cmd, "") {
+		t.Fatal("пустые аргументы")
+	}
+}
+
 func TestWriteFileAtomicReplacesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Preferences")
 	if err := os.WriteFile(path, []byte("старое"), 0o600); err != nil {
@@ -346,6 +375,26 @@ func TestWaitJobPrefersNewURLOverClose(t *testing.T) {
 	}
 	if got["url"] != "https://www.ozon.ru/product/1" {
 		t.Fatalf("url %v", got)
+	}
+	if got["focus"] == "1" {
+		t.Fatal("замер не должен выводить окно на передний план")
+	}
+	if got["left"] == "" || got["top"] == "" {
+		t.Fatalf("нужны координаты за экраном: %v", got)
+	}
+}
+
+func TestWaitJobSendsFocusForShow(t *testing.T) {
+	b := newTestBrowser(t)
+	b.job.Store(&extJob{
+		url:   "https://www.ozon.ru/product/1",
+		site:  "ozon",
+		focus: true,
+		bits:  make(chan pageBits, 1),
+	})
+	got := waitJobJSON(t, b, 2*time.Second)
+	if got["focus"] != "1" {
+		t.Fatalf("щелчок по строке должен поднять окно: %v", got)
 	}
 }
 

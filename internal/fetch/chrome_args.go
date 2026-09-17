@@ -1,9 +1,15 @@
 package fetch
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+)
+
+const (
+	chromeWindowW = 1280
+	chromeWindowH = 900
 )
 
 // shoppingChromeArgs — флаги обычного Chrome для карточек магазинов.
@@ -12,7 +18,10 @@ import (
 //
 // Адреса карточки среди флагов нет: её открывает расширение по задаче
 // от бота. URL в argv живому Chrome этого профиля добавлял бы ещё вкладку.
-func shoppingChromeArgs(profile, extDir, extID string) []string {
+//
+// background — замер цены: окно за краем экрана и без активации, чтобы
+// не перехватывать клавиатуру. По щелчку в списке background=false.
+func shoppingChromeArgs(profile, extDir, extID string, background bool) []string {
 	args := []string{
 		"--user-data-dir=" + profile,
 		"--enable-unsafe-extension-debugging",
@@ -20,6 +29,14 @@ func shoppingChromeArgs(profile, extDir, extID string) []string {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--hide-crash-restore-bubble",
+	}
+	if background {
+		args = append(args, offscreenChromeArgs()...)
+		args = append(args,
+			"--disable-backgrounding-occluded-windows",
+			"--disable-renderer-backgrounding",
+			"--disable-background-timer-throttling",
+		)
 	}
 	if extDir != "" {
 		args = append(args, "--load-extension="+extDir)
@@ -31,7 +48,7 @@ func shoppingChromeArgs(profile, extDir, extID string) []string {
 }
 
 func installChromeArgs(profile string) []string {
-	return []string{
+	args := []string{
 		"--user-data-dir=" + profile,
 		"--remote-debugging-pipe",
 		"--enable-unsafe-extension-debugging",
@@ -39,10 +56,21 @@ func installChromeArgs(profile string) []string {
 		"--no-default-browser-check",
 		"--disable-popup-blocking",
 		"--hide-crash-restore-bubble",
-		"--window-position=-2400,-2400",
-		"--window-size=800,600",
-		"about:blank",
 	}
+	args = append(args, offscreenChromeArgs()...)
+	return append(args, "about:blank")
+}
+
+func offscreenChromeArgs() []string {
+	x, y := offscreenOrigin()
+	return []string{
+		fmt.Sprintf("--window-position=%d,%d", x, y),
+		fmt.Sprintf("--window-size=%d,%d", chromeWindowW, chromeWindowH),
+	}
+}
+
+func offscreenOrigin() (int, int) {
+	return offscreenOriginOS()
 }
 
 func hasRemoteDebugging(args []string) bool {

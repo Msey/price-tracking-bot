@@ -132,7 +132,10 @@ func startPipeChrome(exe, profile string) (*pipeChrome, error) {
 			syscall.Handle(childWrite),
 		},
 	}
-	if err := cmd.Start(); err != nil {
+	unlock := lockForeground()
+	err = cmd.Start()
+	unlock()
+	if err != nil {
 		windows.CloseHandle(childRead)
 		windows.CloseHandle(childWrite)
 		closePipes(toChildR, toChildW, fromChildR, fromChildW)
