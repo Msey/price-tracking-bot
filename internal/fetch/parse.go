@@ -382,13 +382,33 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 
 func cleanShopName(h1, title string) string {
 	name := strings.TrimSpace(h1)
-	if name == "" {
+	if name == "" || genericShopTitle(name) {
 		name = strings.TrimSpace(title)
+	}
+	if genericShopTitle(name) {
+		name = ""
 	}
 	for _, sep := range shopTitleCutovers {
 		if i := strings.Index(name, sep); i > 0 {
 			name = strings.TrimSpace(name[:i])
 		}
 	}
+	if genericShopTitle(name) {
+		return ""
+	}
 	return name
+}
+
+// genericShopTitle — слоган витрины, а не имя карточки. У Wildberries
+// document.title часто «Интернет-магазин Wildberries: …», его нельзя
+// писать в список.
+func genericShopTitle(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	if t == "" {
+		return true
+	}
+	if strings.HasPrefix(t, "интернет-магазин wildberries") {
+		return true
+	}
+	return strings.Contains(t, "wildberries") && strings.Contains(t, "широкий ассортимент")
 }

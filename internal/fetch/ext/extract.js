@@ -382,12 +382,18 @@ function wbWalletPrice() {
   return '';
 }
 
+function wbProductTitle() {
+  var el = document.querySelector('h2[class*="productTitle"]')
+    || document.querySelector('[class*="productTitle"]')
+    || document.querySelector('h1');
+  return el ? (el.textContent || '').trim() : '';
+}
+
 function extractWB() {
   var title = document.title || '';
   var body = haystack();
   var low = body.toLowerCase();
   var css = wbWalletPrice();
-  var h1 = document.querySelector('h1');
   var blocked = low.indexOf('подозрительная активность') !== -1
     || low.indexOf('новая попытка через') !== -1
     || low.indexOf('проверяем браузер') !== -1;
@@ -398,7 +404,7 @@ function extractWB() {
     blocked: blocked,
     ldjson: ldjson(),
     cssPrice: css,
-    name: h1 ? (h1.textContent || '').trim() : '',
+    name: wbProductTitle(),
     title: title
   };
 }

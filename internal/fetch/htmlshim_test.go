@@ -44,6 +44,7 @@ func TestShimSelectorsMatchExtension(t *testing.T) {
 		"кошельк",                // Wildberries: подпись цены с кошельком
 		"price-block__wallet-price",
 		"price-block__final-price",
+		"productTitle", // Wildberries: название в h2, не document.title
 	} {
 		if !strings.Contains(js, sel) {
 			t.Errorf("обвязка ищет %q, а extract.js — уже нет", sel)
@@ -85,7 +86,7 @@ func parseWildberriesHTML(html string) (Snapshot, error) {
 		Blocked:  wbAntibotHTML(html),
 		LDJSON:   extractLDJSON(html),
 		CSSPrice: extractWBPriceText(html),
-		Name:     extractH1(html),
+		Name:     extractWBName(html),
 		Title:    extractTitle(html),
 	})
 }
@@ -195,9 +196,10 @@ func extractOzonPriceText(html string) string {
 }
 
 var (
-	wbH2PriceRe     = regexp.MustCompile(`(?is)<h2\b[^>]*>\s*([^<]+?)\s*<`)
-	wbWalletClassRe = regexp.MustCompile(`(?is)class=["'][^"']*\bprice-block__wallet-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
-	wbFinalPriceRe  = regexp.MustCompile(`(?is)<ins\b[^>]*class=["'][^"']*\bprice-block__final-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbH2PriceRe      = regexp.MustCompile(`(?is)<h2\b[^>]*>\s*([^<]+?)\s*<`)
+	wbWalletClassRe  = regexp.MustCompile(`(?is)class=["'][^"']*\bprice-block__wallet-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbFinalPriceRe   = regexp.MustCompile(`(?is)<ins\b[^>]*class=["'][^"']*\bprice-block__final-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbProductTitleRe = regexp.MustCompile(`(?is)<h2\b[^>]*class=["'][^"']*productTitle[^"']*["'][^>]*>([\s\S]*?)</h2>`)
 )
 
 func extractWBPriceText(html string) string {
@@ -210,8 +212,11 @@ func extractWBPriceText(html string) string {
 		}
 		window := html[start:loc]
 		if m := wbH2PriceRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
-			if p := strings.TrimSpace(m[len(m)-1][1]); p != "" {
-				return p
+			for i := len(m) - 1; i >= 0; i-- {
+				p := strings.TrimSpace(m[i][1])
+				if _, ok := parseDisplayedPrice(p); ok {
+					return p
+				}
 			}
 		}
 		if m := wbWalletClassRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
@@ -249,6 +254,16 @@ func extractH1(html string) string {
 		return ""
 	}
 	return strings.Join(strings.Fields(tagRe.ReplaceAllString(m[1], " ")), " ")
+}
+
+func extractWBName(html string) string {
+	if m := wbProductTitleRe.FindStringSubmatch(html); len(m) == 2 {
+		name := strings.Join(strings.Fields(tagRe.ReplaceAllString(m[1], " ")), " ")
+		if name != "" {
+			return name
+		}
+	}
+	return extractH1(html)
 }
 
 func extractTitle(html string) string {

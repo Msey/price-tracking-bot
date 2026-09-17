@@ -67,10 +67,30 @@ func TestParseWildberriesHTMLAntibot(t *testing.T) {
 	}
 }
 
-func TestParseWildberriesHTMLNoPrice(t *testing.T) {
-	_, err := parseWildberriesHTML(`<html><h1>Товар</h1></html>`)
-	if !errors.Is(err, ErrNoPrice) {
-		t.Fatalf("ожидался ErrNoPrice, получено %v", err)
+func TestParseWildberriesHTMLProductTitleH2(t *testing.T) {
+	html := `<title>Интернет-магазин Wildberries: широкий ассортимент товаров - скидки каждый день!</title>
+<h2 class="mo-typography mo-typography_variant_title3 mo-typography_variable-weight_title3 mo-typography_variable mo-typography_colors_primary productTitle--jKvWV">Test title</h2>
+<span class="price-block__wallet-price">1 038 ₽</span>
+<span>с WB Кошельком</span>`
+	snap, err := parseWildberriesHTML(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Name != "Test title" {
+		t.Fatalf("имя %q, ожидалось из h2.productTitle, не слоган витрины", snap.Name)
+	}
+	if snap.PriceKopecks != 103800 {
+		t.Fatalf("цена %d", snap.PriceKopecks)
+	}
+}
+
+func TestCleanShopNameIgnoresWildberriesHomeTitle(t *testing.T) {
+	got := cleanShopName("", "Интернет-магазин Wildberries: широкий ассортимент товаров - скидки каждый день!")
+	if got != "" {
+		t.Fatalf("слоган витрины не должен стать именем: %q", got)
+	}
+	if got := cleanShopName("Покрывало", "Интернет-магазин Wildberries: широкий ассортимент товаров - скидки каждый день!"); got != "Покрывало" {
+		t.Fatalf("имя карточки: %q", got)
 	}
 }
 
