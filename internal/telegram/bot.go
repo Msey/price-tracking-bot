@@ -35,9 +35,13 @@ const (
 
 var (
 	errOffline = errors.New("telegram: нет связи, уведомление отложено")
-	helpIntro = `Я слежу за ценами на DNS, Яндекс.Маркете, Wildberries (WB) и Ozon.
+	helpIntro  = `Я слежу за ценами на DNS, Яндекс.Маркете, Wildberries (WB) и Ozon.
 
 Пришлите ссылку на карточку DNS, Ozon, Яндекс.Маркета или Wildberries. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент.
+
+Рядом со ссылкой можно указать порог в рублях. Один раз напишу, когда цена станет ниже этого числа.
+
+Пример: https://www.ozon.ru/product/… 15000
 
 /list — ваши ссылки
 /del номер — снять ссылку
@@ -296,12 +300,16 @@ func (b *Bot) handleAdd(c telebot.Context) error {
 	args := strings.TrimSpace(strings.Join(c.Args(), " "))
 	b.log.Info("команда /add", "user_id", telegramUserID(c), "args", diaglog.Clip(args, 180))
 	if args == "" {
-		return c.Send("Использование: /add &lt;ссылка на товар&gt;", telebot.NoPreview)
+		return c.Send("Использование: /add &lt;ссылка на товар&gt; [порог в рублях]", telebot.NoPreview)
 	}
 	return b.add(c, args)
 }
 
 func (b *Bot) add(c telebot.Context, raw string) error {
+	alertKopecks, err := parseAlert(raw)
+	if err != nil {
+		return c.Send("Порог — число рублей рядом со ссылкой, без другого текста. Например: ссылка и 15000.", telebot.NoPreview)
+	}
 	ref, err := sites.Parse(raw)
 	if err != nil {
 		return c.Send(explainParseError(err), telebot.NoPreview)
@@ -326,18 +334,56 @@ func (b *Bot) add(c telebot.Context, raw string) error {
 		return err
 	}
 
-	if !created {
+	var subID int64
+	if alertKopecks > 0 {
+		subID, err = b.store.SetPriceAlert(ctx, userID, product.ID, alertKopecks)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !created && alertKopecks == 0 {
 		return c.Send("Этот товар уже в списке. Посмотреть всё — /list", telebot.NoPreview)
 	}
 
 	b.log.Info("добавлена подписка",
-		"user_id", userID, "site", ref.Site, "key", ref.ExternalKey)
+		"user_id", userID, "site", ref.Site, "key", ref.ExternalKey, "alert", alertKopecks, "created", created)
 
-	return c.Send(fmt.Sprintf(
+	msg := addReply(product, ref, b.cfg.DefaultCity, created, alertKopecks)
+	var below int64
+	if subID > 0 {
+		if price, ok := knownBelow(ctx, b.store, product.ID, alertKopecks); ok {
+			below = price
+			msg += "\n\n" + view.PriceBelow(product, price, alertKopecks)
+		}
+	}
+	if err := c.Send(msg, telebot.NoPreview); err != nil {
+		return err
+	}
+	if below > 0 && subID > 0 {
+		if err := b.store.MarkAlertFired(ctx, subID); err != nil {
+			b.log.Warn("не отметил разовый порог", "sub", subID, "error", err)
+		}
+	}
+	return nil
+}
+
+func addReply(product storage.Product, ref sites.Ref, city string, created bool, alertKopecks int64) string {
+	if !created {
+		return fmt.Sprintf(
+			"Этот товар уже в списке. Порог обновил: %s. Один раз напишу, когда цена станет ниже.",
+			html.EscapeString(money.FormatKopecks(alertKopecks)))
+	}
+	msg := fmt.Sprintf(
 		"Добавил в отслеживание.\n\n%s\nМагазин: %s\nГород: %s\n\n"+
 			"Проверяю раз в %s и напишу, когда цена изменится.",
-		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(b.cfg.DefaultCity), humanDuration(ref.Site.CheckInterval()),
-	), telebot.NoPreview)
+		linkTo(product), html.EscapeString(ref.Site.Title()), html.EscapeString(city), humanDuration(ref.Site.CheckInterval()),
+	)
+	if alertKopecks > 0 {
+		msg += fmt.Sprintf("\n\nПорог: %s. Один раз напишу, когда цена станет ниже.",
+			html.EscapeString(money.FormatKopecks(alertKopecks)))
+	}
+	return msg
 }
 
 func (b *Bot) handleList(c telebot.Context) error {
@@ -498,17 +544,22 @@ func explainParseError(err error) string {
 func linkTo(p storage.Product) string { return view.TelegramLink(p) }
 
 func describePrice(t storage.Tracked) string {
-	if !t.LastPriceKopecks.Valid {
-		return "цена ещё не проверялась"
+	var s string
+	switch {
+	case !t.LastPriceKopecks.Valid:
+		s = "цена ещё не проверялась"
+	case t.LastPriceKopecks.Int64 == 0:
+		s = "цена не найдена"
+	default:
+		s = money.FormatKopecks(t.LastPriceKopecks.Int64)
 	}
-	when := ""
-	if t.LastCheckedAt.Valid {
-		when = " (проверено " + t.LastCheckedAt.String + ")"
+	if t.LastCheckedAt.Valid && t.LastPriceKopecks.Valid {
+		s += " (проверено " + t.LastCheckedAt.String + ")"
 	}
-	if t.LastPriceKopecks.Int64 == 0 {
-		return "цена не найдена" + when
+	if t.AlertKopecks > 0 {
+		s += " · порог " + money.FormatKopecks(t.AlertKopecks)
 	}
-	return money.FormatKopecks(t.LastPriceKopecks.Int64) + when
+	return s
 }
 
 func humanDuration(d time.Duration) string {

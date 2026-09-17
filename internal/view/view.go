@@ -136,3 +136,13 @@ func PriceChange(p storage.Product, prev, cur storage.SnapshotRow) string {
 	}
 	return msg
 }
+
+// PriceBelow — HTML разового письма: цена стала ниже порога, который
+// человек указал при добавлении ссылки.
+func PriceBelow(p storage.Product, priceKopecks, alertKopecks int64) string {
+	return fmt.Sprintf("🔔 Цена ниже порога\n\n%s\nсейчас %s\nпорог %s",
+		TelegramLink(p),
+		html.EscapeString(money.FormatKopecks(priceKopecks)),
+		html.EscapeString(money.FormatKopecks(alertKopecks)),
+	)
+}

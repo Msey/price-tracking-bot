@@ -91,7 +91,7 @@ var (
 // Parse распознаёт ссылку на товар. Ссылка может быть окружена текстом:
 // Telegram часто присылает её вместе с подписью.
 func Parse(raw string) (Ref, error) {
-	raw = extractURL(raw)
+	raw = ExtractURL(raw)
 	if raw == "" {
 		return Ref{}, ErrNotALink
 	}
@@ -238,7 +238,9 @@ func siteByHost(host string) (Site, bool) {
 
 var urlInText = regexp.MustCompile(`https?://[^\s<>"']+`)
 
-func extractURL(s string) string {
+// ExtractURL вытаскивает первую http(s)-ссылку из текста. Нужна, чтобы
+// рядом со ссылкой можно было написать порог, не ломая разбор карточки.
+func ExtractURL(s string) string {
 	raw := urlInText.FindString(strings.TrimSpace(s))
 	// Telegram и мессенджеры часто оборачивают ссылку в скобки или ставят точку в конце.
 	return strings.TrimRight(raw, ".,);]!?»")

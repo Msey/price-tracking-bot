@@ -31,11 +31,15 @@ func (p *pausedFake) Paused() (time.Time, string, bool) {
 }
 
 type fakeNotify struct {
-	n int
+	n     int
+	chats []int64
+	msgs  []string
 }
 
-func (f *fakeNotify) Notify(context.Context, int64, string) error {
+func (f *fakeNotify) Notify(_ context.Context, chatID int64, message string) error {
 	f.n++
+	f.chats = append(f.chats, chatID)
+	f.msgs = append(f.msgs, message)
 	return nil
 }
 
@@ -251,6 +255,103 @@ func TestCheckOneNotifiesDropAfterFirstPrice(t *testing.T) {
 	}
 	if notes.n != 1 {
 		t.Fatalf("смена после первой цены должна сразу уведомить, получено %d", notes.n)
+	}
+}
+
+func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "alert.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddSubscription(ctx, 43, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPriceAlert(ctx, 42, p.ID, 9500); err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 10000}
+	notes := &fakeNotify{}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
+		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
+	}, nil)
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 0 {
+		t.Fatalf("цена выше порога не должна писать про порог, получено %d", notes.n)
+	}
+
+	dns.price = 9000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	// смена цены — обоим, порог — только тому, кто его задал
+	if notes.n != 3 {
+		t.Fatalf("писем %d, ожидалось 3 (два про смену и одно про порог)", notes.n)
+	}
+	alerts := 0
+	for i, chat := range notes.chats {
+		if strings.Contains(notes.msgs[i], "ниже порога") {
+			alerts++
+			if chat != 42 {
+				t.Fatalf("порог ушёл чужому чату %d", chat)
+			}
+		}
+	}
+	if alerts != 1 {
+		t.Fatalf("писем про порог %d", alerts)
+	}
+
+	dns.price = 8000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	alerts = 0
+	for _, msg := range notes.msgs {
+		if strings.Contains(msg, "ниже порога") {
+			alerts++
+		}
+	}
+	if alerts != 1 {
+		t.Fatalf("повторно порог не пишем, писем %d", alerts)
+	}
+}
+
+func TestCheckOneFiresAlertOnFirstPriceAlreadyBelow(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "alert-first.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPriceAlert(ctx, 42, p.ID, 9500); err != nil {
+		t.Fatal(err)
+	}
+
+	dns := &fakeDNS{price: 9000}
+	notes := &fakeNotify{}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
+		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
+	}, nil)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 || !strings.Contains(notes.msgs[0], "ниже порога") {
+		t.Fatalf("первая цена ниже порога — одно письмо про порог, получено %d %v", notes.n, notes.msgs)
 	}
 }
 

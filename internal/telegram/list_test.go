@@ -91,6 +91,24 @@ func TestListContentShowsOnlyOwnLinks(t *testing.T) {
 	}
 }
 
+func TestListContentShowsAlert(t *testing.T) {
+	b, store, ctx := botStore(t)
+	p, _, err := store.AddSubscription(ctx, 1001, "ozon", "2190214590", "https://www.ozon.ru/product/2190214590", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPriceAlert(ctx, 1001, p.ID, 1_500_000); err != nil {
+		t.Fatal(err)
+	}
+	text, _, err := b.listContent(ctx, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "порог") {
+		t.Fatalf("в /list нет порога: %s", text)
+	}
+}
+
 func TestListContentEmptyWhenOthersHaveLinks(t *testing.T) {
 	b, store, ctx := botStore(t)
 	if _, _, err := store.AddSubscription(ctx, 1002, "ozon", "2190214590", "https://www.ozon.ru/product/2190214590", "moscow"); err != nil {

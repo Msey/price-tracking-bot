@@ -79,6 +79,23 @@ type Tracked struct {
 	Product          Product
 	LastPriceKopecks sql.NullInt64
 	LastCheckedAt    sql.NullString
+	// AlertKopecks — разовый порог; 0, если человек его не задал.
+	AlertKopecks int64
+}
+
+// PriceAlert — неотправлённый разовый порог одного подписчика.
+type PriceAlert struct {
+	SubscriptionID int64
+	ChatID         int64
+	Kopecks        int64
+}
+
+// AlertDue — известная цена строго ниже порога, и письмо ещё не уходило.
+func AlertDue(priceKopecks, alertKopecks int64, fired bool) bool {
+	if fired || alertKopecks <= 0 || priceKopecks <= 0 {
+		return false
+	}
+	return priceKopecks < alertKopecks
 }
 
 // Open открывает базу и приводит схему к актуальной версии.
@@ -221,7 +238,7 @@ func (s *Store) ListSubscriptions(ctx context.Context, chatID int64) ([]Tracked,
 		if err := rows.Scan(
 			&t.Product.ID, &t.Product.Site, &t.Product.ExternalKey,
 			&t.Product.URL, &t.Product.Name, &t.Product.City,
-			&t.LastPriceKopecks, &t.LastCheckedAt); err != nil {
+			&t.LastPriceKopecks, &t.LastCheckedAt, &t.AlertKopecks); err != nil {
 			return nil, fmt.Errorf("storage: чтение подписки: %w", err)
 		}
 		out = append(out, t)

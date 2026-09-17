@@ -67,6 +67,11 @@ var migrations = []string{
 	// 2–3. Базовая цена, с которой сравниваем следующие подтверждённые чтения.
 	`ALTER TABLE products ADD COLUMN last_notified_kopecks INTEGER;`,
 	`ALTER TABLE products ADD COLUMN last_notified_available INTEGER;`,
+
+	// 4–5. Разовый порог в копейках на подписку, не на товар: у двух
+	// человек на одну карточку разные суммы. alert_fired — уже писали.
+	`ALTER TABLE subscriptions ADD COLUMN alert_kopecks INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE subscriptions ADD COLUMN alert_fired INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

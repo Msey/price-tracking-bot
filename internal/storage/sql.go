@@ -34,7 +34,7 @@ const (
 
 	sqlListSubscriptions = `
 		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city,
-		       last.price_kopecks, last.checked_at
+		       last.price_kopecks, last.checked_at, s.alert_kopecks
 		FROM subscriptions s
 		JOIN users u ON u.id = s.user_id
 		JOIN products p ON p.id = s.product_id
@@ -164,6 +164,25 @@ const (
 		FROM subscriptions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.product_id = ? AND s.active = 1`
+
+	sqlSetPriceAlert = `
+		UPDATE subscriptions
+		SET alert_kopecks = ?, alert_fired = 0
+		WHERE product_id = ?
+		  AND active = 1
+		  AND user_id = (SELECT id FROM users WHERE tg_chat_id = ?)
+		RETURNING id`
+
+	sqlPendingPriceAlerts = `
+		SELECT s.id, u.tg_chat_id, s.alert_kopecks
+		FROM subscriptions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.product_id = ? AND s.active = 1
+		  AND s.alert_kopecks > 0 AND s.alert_fired = 0`
+
+	sqlMarkAlertFired = `
+		UPDATE subscriptions SET alert_fired = 1
+		WHERE id = ? AND alert_fired = 0`
 
 	sqlInsertFetchError = `
 		INSERT INTO fetch_errors (product_id, site, kind, message) VALUES (?, ?, ?, ?)`

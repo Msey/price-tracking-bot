@@ -393,25 +393,58 @@ func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name str
 		return err
 	}
 	d := Decide(history)
+	named := p
+	if name != "" {
+		named.Name = name
+	}
 	switch {
 	case d.Baseline:
-		return t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available)
+		if err := t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available); err != nil {
+			return err
+		}
 	case d.Notify:
 		t.log.Info("цена изменилась, уведомляю", "product", p.ID, "from", d.Previous.PriceKopecks, "to", d.Current.PriceKopecks)
 		product, err := t.store.ProductByID(ctx, p.ID)
 		if err != nil {
-			product = p
-			if name != "" {
-				product.Name = name
-			}
+			product = named
 		}
 		if err := t.announce(ctx, product, d); err != nil {
 			return err
 		}
-		return t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available)
-	default:
+		if err := t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available); err != nil {
+			return err
+		}
+		named = product
+	}
+	if available {
+		return t.announceAlerts(ctx, named, kopecks)
+	}
+	return nil
+}
+
+func (t *Tracker) announceAlerts(ctx context.Context, p storage.Product, kopecks int64) error {
+	if t.notify == nil || t.store == nil {
 		return nil
 	}
+	alerts, err := t.store.PendingPriceAlerts(ctx, p.ID)
+	if err != nil {
+		return err
+	}
+	for _, a := range alerts {
+		if !storage.AlertDue(kopecks, a.Kopecks, false) {
+			continue
+		}
+		msg := view.PriceBelow(p, kopecks, a.Kopecks)
+		t.log.Info("отправляю порог", "chat_id", a.ChatID, "product", p.ID, "alert", a.Kopecks)
+		if err := t.notify.Notify(ctx, a.ChatID, msg); err != nil {
+			t.log.Warn("порог не доставлен", "chat_id", a.ChatID, "product", p.ID, "error", err)
+			continue
+		}
+		if err := t.store.MarkAlertFired(ctx, a.SubscriptionID); err != nil {
+			t.log.Warn("не отметил разовый порог", "sub", a.SubscriptionID, "error", err)
+		}
+	}
+	return nil
 }
 
 func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) error {

@@ -987,3 +987,78 @@ func TestRecordSnapshotPriceChangeInserts(t *testing.T) {
 		t.Fatal("запись без товара должна быть ошибкой")
 	}
 }
+
+func TestAlertDueBoundaries(t *testing.T) {
+	if AlertDue(0, 10000, false) || AlertDue(10000, 0, false) || AlertDue(10000, 10000, false) {
+		t.Fatal("ноль, нет порога и равенство не срабатывают")
+	}
+	if AlertDue(9999, 10000, true) {
+		t.Fatal("повторно не пишем")
+	}
+	if !AlertDue(9999, 10000, false) {
+		t.Fatal("строго ниже порога")
+	}
+}
+
+func TestPriceAlertIsPerSubscriberAndOnce(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddSubscription(ctx, chatBob, "dns", dnsKey, dnsURL, "moscow"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.SetPriceAlert(ctx, 0, p.ID, 1500000); !errors.Is(err, ErrNoUser) {
+		t.Errorf("без пользователя: %v", err)
+	}
+	if _, err := s.SetPriceAlert(ctx, chatAlice, 0, 1500000); err == nil {
+		t.Fatal("без товара порог ставиться не должен")
+	}
+	if _, err := s.SetPriceAlert(ctx, chatAlice, p.ID, 0); err == nil {
+		t.Fatal("нулевой порог")
+	}
+
+	aliceSub, err := s.SetPriceAlert(ctx, chatAlice, p.ID, 1_500_000)
+	if err != nil || aliceSub < 1 {
+		t.Fatalf("порог Алисы: id=%d err=%v", aliceSub, err)
+	}
+	pending, err := s.PendingPriceAlerts(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ChatID != chatAlice || pending[0].Kopecks != 1_500_000 {
+		t.Fatalf("чужой порог в очереди: %+v", pending)
+	}
+
+	items, err := s.ListSubscriptions(ctx, chatAlice)
+	if err != nil || len(items) != 1 || items[0].AlertKopecks != 1_500_000 {
+		t.Fatalf("список Алисы без порога: %+v err=%v", items, err)
+	}
+	bobItems, err := s.ListSubscriptions(ctx, chatBob)
+	if err != nil || len(bobItems) != 1 || bobItems[0].AlertKopecks != 0 {
+		t.Fatalf("у Боба появился порог Алисы: %+v err=%v", bobItems, err)
+	}
+
+	if err := s.MarkAlertFired(ctx, aliceSub); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PendingPriceAlerts(ctx, p.ID)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("после отправки очередь %v err=%v", pending, err)
+	}
+
+	if _, err := s.SetPriceAlert(ctx, chatAlice, p.ID, 900_000); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PendingPriceAlerts(ctx, p.ID)
+	if err != nil || len(pending) != 1 || pending[0].Kopecks != 900_000 {
+		t.Fatalf("новый порог должен снова ждать письма: %+v err=%v", pending, err)
+	}
+	none, err := s.PendingPriceAlerts(ctx, 0)
+	if err != nil || len(none) != 0 {
+		t.Errorf("без товара: n=%d err=%v", len(none), err)
+	}
+}

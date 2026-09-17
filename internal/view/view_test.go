@@ -111,3 +111,14 @@ func TestPriceChange(t *testing.T) {
 		t.Fatalf("наличие: %s", gone)
 	}
 }
+
+func TestPriceBelow(t *testing.T) {
+	p := storage.Product{URL: `https://www.dns-shop.ru/product/abc/"`, Name: `<b>x</b>`}
+	got := PriceBelow(p, 1200000, 1500000)
+	if !strings.Contains(got, "ниже порога") || !strings.Contains(got, "12") || !strings.Contains(got, "15") {
+		t.Fatalf("письмо: %s", got)
+	}
+	if strings.Contains(got, `<b>`) {
+		t.Fatalf("название не экранировано: %s", got)
+	}
+}

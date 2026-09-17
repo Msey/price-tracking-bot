@@ -284,6 +284,62 @@ func (s *Store) MarkNotified(ctx context.Context, productID, kopecks int64, avai
 	return nil
 }
 
+// SetPriceAlert ставит разовый порог на подписку этого чата и сбрасывает
+// «уже писал», чтобы новое число могло сработать снова.
+func (s *Store) SetPriceAlert(ctx context.Context, chatID, productID, alertKopecks int64) (int64, error) {
+	if chatID <= 0 {
+		return 0, ErrNoUser
+	}
+	if productID < 1 || alertKopecks <= 0 {
+		return 0, fmt.Errorf("storage: порог для товара %d: нет подписки или суммы", productID)
+	}
+	var id int64
+	err := s.db.QueryRowContext(ctx, sqlSetPriceAlert, alertKopecks, productID, chatID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("storage: порог для товара %d: нет подписки", productID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("storage: порог для товара %d: %w", productID, err)
+	}
+	return id, nil
+}
+
+// PendingPriceAlerts — подписчики товара с порогом, которым ещё не писали.
+func (s *Store) PendingPriceAlerts(ctx context.Context, productID int64) ([]PriceAlert, error) {
+	if productID < 1 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, sqlPendingPriceAlerts, productID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: пороги товара %d: %w", productID, err)
+	}
+	defer rows.Close()
+
+	var out []PriceAlert
+	for rows.Next() {
+		var a PriceAlert
+		if err := rows.Scan(&a.SubscriptionID, &a.ChatID, &a.Kopecks); err != nil {
+			return nil, fmt.Errorf("storage: чтение порога: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: обход порогов: %w", err)
+	}
+	return out, nil
+}
+
+// MarkAlertFired отмечает, что разовое письмо по порогу уже ушло.
+func (s *Store) MarkAlertFired(ctx context.Context, subscriptionID int64) error {
+	if subscriptionID < 1 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, sqlMarkAlertFired, subscriptionID); err != nil {
+		return fmt.Errorf("storage: отметка порога %d: %w", subscriptionID, err)
+	}
+	return nil
+}
+
 // SubscriberChats — чаты, которым нужно сообщить о товаре.
 func (s *Store) SubscriberChats(ctx context.Context, productID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, sqlSubscriberChats, productID)
