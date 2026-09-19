@@ -99,9 +99,17 @@ func TelegramLink(p storage.Product) string {
 	return fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(p.URL), html.EscapeString(p.Title()))
 }
 
-// PriceChange — HTML для уведомления о смене цены. Сборка текста здесь,
-// чтобы цикл проверки не знал про вёрстку Telegram.
+// PriceChange — HTML для уведомления о смене цены или наличия.
+// Если сменилось только наличие (или вместе с ценой), про цену не пишем:
+// «выросла на 0 ₽» при пропаже с витрины выглядит как сбой.
 func PriceChange(p storage.Product, prev, cur storage.SnapshotRow) string {
+	if prev.Available != cur.Available {
+		msg := TelegramLink(p)
+		if prev.Available && !cur.Available {
+			return msg + "\n\nТовар пропал из наличия."
+		}
+		return msg + "\n\nТовар снова в наличии."
+	}
 	diff := cur.PriceKopecks - prev.PriceKopecks
 	verb, arrow := "выросла", "📈"
 	if diff < 0 {
@@ -120,7 +128,7 @@ func PriceChange(p storage.Product, prev, cur storage.SnapshotRow) string {
 	if diff < 0 {
 		mark = "−"
 	}
-	msg := fmt.Sprintf("%s Цена %s\n\n%s\nбыло %s\nстало %s\n%s %s (%s)",
+	return fmt.Sprintf("%s Цена %s\n\n%s\nбыло %s\nстало %s\n%s %s (%s)",
 		arrow, verb,
 		TelegramLink(p),
 		html.EscapeString(money.FormatKopecks(prev.PriceKopecks)),
@@ -129,12 +137,6 @@ func PriceChange(p storage.Product, prev, cur storage.SnapshotRow) string {
 		html.EscapeString(money.FormatKopecks(abs)),
 		html.EscapeString(pct),
 	)
-	if prev.Available && !cur.Available {
-		msg += "\n\nТовар пропал из наличия."
-	} else if !prev.Available && cur.Available {
-		msg += "\n\nТовар снова в наличии."
-	}
-	return msg
 }
 
 // PriceBelow — HTML разового письма: цена стала ниже порога, который

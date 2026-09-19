@@ -110,6 +110,16 @@ func TestPriceChange(t *testing.T) {
 	if !strings.Contains(gone, "пропал из наличия") {
 		t.Fatalf("наличие: %s", gone)
 	}
+	if strings.Contains(gone, "Цена") || strings.Contains(gone, "было") || strings.Contains(gone, "стало") {
+		t.Fatalf("при смене наличия про цену не пишем: %s", gone)
+	}
+	back := PriceChange(p,
+		storage.SnapshotRow{PriceKopecks: 9000, Available: false},
+		storage.SnapshotRow{PriceKopecks: 8000, Available: true},
+	)
+	if !strings.Contains(back, "снова в наличии") || strings.Contains(back, "снизилась") {
+		t.Fatalf("возврат в наличии без сравнения цены: %s", back)
+	}
 }
 
 func TestPriceBelow(t *testing.T) {
