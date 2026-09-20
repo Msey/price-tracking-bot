@@ -46,7 +46,7 @@ var (
 /list — ваши ссылки
 /del номер — снять ссылку
 `
-	helpShops = "Ozon проверяю каждые 20 мин, DNS, Маркет и Wildberries (WB) — раз в день."
+	helpShops = "Ozon проверяю каждые 1,5 часа, DNS, Маркет и Wildberries (WB) — раз в день."
 	listEmpty = "Список пуст. Пришлите ссылку на товар, чтобы начать. Рядом можно указать порог в рублях."
 )
 
@@ -576,6 +576,8 @@ func humanDuration(d time.Duration) string {
 	switch {
 	case d == 24*time.Hour:
 		return "сутки"
+	case d == 90*time.Minute:
+		return "1,5 часа"
 	case d == time.Hour:
 		return "час"
 	case d%time.Hour == 0:

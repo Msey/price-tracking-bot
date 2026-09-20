@@ -381,7 +381,7 @@ func TestMinCheckInterval(t *testing.T) {
 	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}}); got != 24*time.Hour {
 		t.Fatalf("только dns: %s", got)
 	}
-	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}, "ozon": &fakeDNS{}}); got != 20*time.Minute {
+	if got := minCheckInterval(map[string]Fetcher{"dns": &fakeDNS{}, "ozon": &fakeDNS{}}); got != 90*time.Minute {
 		t.Fatalf("dns+ozon: %s", got)
 	}
 	tr := New(nil, map[string]Fetcher{
@@ -389,14 +389,14 @@ func TestMinCheckInterval(t *testing.T) {
 		"ozon":          &fakeDNS{},
 		"yandex_market": &fakeDNS{},
 	}, nil, Config{Interval: time.Hour}, nil)
-	if tr.cfg.Interval != 20*time.Minute {
-		t.Fatalf("пауза автоцикла = %s, ожидалось 20 минут из-за Ozon", tr.cfg.Interval)
+	if tr.cfg.Interval != 90*time.Minute {
+		t.Fatalf("пауза автоцикла = %s, ожидалось 1,5 часа из-за Ozon", tr.cfg.Interval)
 	}
 	if siteCheckInterval("dns") != 24*time.Hour || siteCheckInterval("yandex_market") != 24*time.Hour {
 		t.Fatal("dns и маркет должны быть раз в сутки")
 	}
-	if siteCheckInterval("ozon") != 20*time.Minute {
-		t.Fatal("ozon должен быть раз в 20 минут")
+	if siteCheckInterval("ozon") != 90*time.Minute {
+		t.Fatal("ozon должен быть раз в 1,5 часа")
 	}
 }
 

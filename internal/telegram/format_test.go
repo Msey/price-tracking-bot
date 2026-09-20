@@ -49,6 +49,9 @@ func TestHumanDuration(t *testing.T) {
 	if got := humanDuration(20 * time.Minute); got != "20 мин" {
 		t.Errorf("минуты: %q", got)
 	}
+	if got := humanDuration(90 * time.Minute); got != "1,5 часа" {
+		t.Errorf("полтора часа: %q", got)
+	}
 }
 
 func TestDescribePriceZeroMissing(t *testing.T) {
@@ -62,12 +65,12 @@ func TestDescribePriceZeroMissing(t *testing.T) {
 
 func TestHelpTextIsForUsers(t *testing.T) {
 	got := helpFor(false)
-	for _, want := range []string{"/list", "/del", "DNS", "Ozon", "Wildberries", "WB", "20 мин", "Первую найденную цену", "Не больше 5 ссылок", "порог", "15000", "сниму", "наличи"} {
+	for _, want := range []string{"/list", "/del", "DNS", "Ozon", "Wildberries", "WB", "1,5 часа", "Первую найденную цену", "Не больше 5 ссылок", "порог", "15000", "сниму", "наличи"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("в /help нет %q:\n%s", want, got)
 		}
 	}
-	for _, extra := range []string{"банит", "пауза", "сутки", "час", "/help"} {
+	for _, extra := range []string{"банит", "пауза", "сутки", "20 мин", "/help"} {
 		if strings.Contains(got, extra) {
 			t.Errorf("в /help лишнее %q:\n%s", extra, got)
 		}
