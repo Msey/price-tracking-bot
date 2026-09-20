@@ -41,7 +41,10 @@ func TestShimSelectorsMatchExtension(t *testing.T) {
 		`data-widget="webPrice"`, // Ozon
 		"tsHeadline",             // Ozon: класс крупного ценника
 		"ozon банк",              // Ozon: подпись цены с банком
-		"кошельк",                // Wildberries: подпись цены с кошельком
+		"кошельк",                // Wildberries: подпись цены с кошельком (старая карточка)
+		"priceBlockWalletPrice",  // Wildberries: кнопка цены с кошельком
+		"priceBlock--",           // Wildberries: корень блока цены, не рекомендации
+		"priceBlockFinalPrice",
 		"price-block__wallet-price",
 		"price-block__final-price",
 		"productTitle", // Wildberries: название в h2, не document.title
@@ -196,49 +199,102 @@ func extractOzonPriceText(html string) string {
 }
 
 var (
-	wbH2PriceRe      = regexp.MustCompile(`(?is)<h2\b[^>]*>\s*([^<]+?)\s*<`)
-	wbWalletClassRe  = regexp.MustCompile(`(?is)class=["'][^"']*\bprice-block__wallet-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
-	wbFinalPriceRe   = regexp.MustCompile(`(?is)<ins\b[^>]*class=["'][^"']*\bprice-block__final-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
-	wbProductTitleRe = regexp.MustCompile(`(?is)<h2\b[^>]*class=["'][^"']*productTitle[^"']*["'][^>]*>([\s\S]*?)</h2>`)
+	wbH2PriceRe         = regexp.MustCompile(`(?is)<h2\b[^>]*>\s*([^<]+?)\s*<`)
+	wbWalletClassRe     = regexp.MustCompile(`(?is)class=["'][^"']*\bprice-block__wallet-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbFinalPriceRe      = regexp.MustCompile(`(?is)<ins\b[^>]*class=["'][^"']*\bprice-block__final-price\b[^"']*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbAfterClassPriceRe = regexp.MustCompile(`(?is)[^"'<>]*["'][^>]*>\s*([^<]+?)\s*<`)
+	wbProductTitleRe    = regexp.MustCompile(`(?is)<h2\b[^>]*class=["'][^"']*productTitle[^"']*["'][^>]*>([\s\S]*?)</h2>`)
 )
 
 func extractWBPriceText(html string) string {
-	low := strings.ToLower(html)
-	low = strings.ReplaceAll(low, "ё", "е")
-	if loc := strings.Index(low, "кошельк"); loc >= 0 {
-		start := loc - 2500
-		if start < 0 {
-			start = 0
+	if p := extractWBTaggedPrice(html, "priceBlockWalletPrice", wbH2PriceRe); p != "" {
+		return p
+	}
+	if m := wbWalletClassRe.FindStringSubmatch(html); len(m) == 2 {
+		if p := wbAcceptPrice(m[1]); p != "" {
+			return p
 		}
-		window := html[start:loc]
-		if m := wbH2PriceRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
-			for i := len(m) - 1; i >= 0; i-- {
-				p := strings.TrimSpace(m[i][1])
-				if _, ok := parseDisplayedPrice(p); ok {
-					return p
-				}
-			}
-		}
-		if m := wbWalletClassRe.FindAllStringSubmatch(window, -1); len(m) > 0 {
-			if p := strings.TrimSpace(m[len(m)-1][1]); p != "" {
+	}
+	if p := extractWBPriceFromWalletLabel(html); p != "" {
+		return p
+	}
+	if p := extractWBTaggedPrice(html, "priceBlockFinalPrice", wbAfterClassPriceRe); p != "" {
+		return p
+	}
+	if i := strings.Index(html, "product-page__price-block"); i >= 0 {
+		if m := wbFinalPriceRe.FindStringSubmatch(priceWindow(html[i:])); len(m) == 2 {
+			if p := wbAcceptPrice(m[1]); p != "" {
 				return p
 			}
 		}
 	}
-	if m := wbWalletClassRe.FindStringSubmatch(html); len(m) == 2 {
-		return strings.TrimSpace(m[1])
-	}
-	if i := strings.Index(low, "product-page__price-block"); i >= 0 {
-		if m := wbFinalPriceRe.FindStringSubmatch(priceWindow(html[i:])); len(m) == 2 {
-			return strings.TrimSpace(m[1])
+	return ""
+}
+
+func extractWBPriceFromWalletLabel(html string) string {
+	// Как в extract.js: только блок цены карточки, не карусель рекомендаций.
+	for _, marker := range []string{"product-page__price-block", `class="price-block`, `class='price-block`} {
+		i := strings.Index(html, marker)
+		if i < 0 {
+			continue
 		}
+		window := priceWindow(html[i:])
+		low := strings.ToLower(window)
+		low = strings.ReplaceAll(low, "ё", "е")
+		loc := strings.Index(low, "кошельк")
+		if loc < 0 {
+			continue
+		}
+		before := window[:loc]
+		if m := wbH2PriceRe.FindAllStringSubmatch(before, -1); len(m) > 0 {
+			for i := len(m) - 1; i >= 0; i-- {
+				if p := wbAcceptPrice(m[i][1]); p != "" {
+					return p
+				}
+			}
+		}
+		if m := wbWalletClassRe.FindAllStringSubmatch(before, -1); len(m) > 0 {
+			if p := wbAcceptPrice(m[len(m)-1][1]); p != "" {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+func wbAcceptPrice(s string) string {
+	s = strings.TrimSpace(s)
+	if _, ok := parseDisplayedPrice(s); ok {
+		return s
+	}
+	return ""
+}
+
+// extractWBTaggedPrice читает сумму из окна после CSS-модуля WB. Между
+// классом кнопки и <h2> часто иконка-SVG на ~1.7 КБ — окно шире обычного.
+func extractWBTaggedPrice(html, classFrag string, inner *regexp.Regexp) string {
+	if classFrag == "" || inner == nil {
+		return ""
+	}
+	i := strings.Index(html, classFrag)
+	if i < 0 {
+		return ""
+	}
+	if m := inner.FindStringSubmatch(boundedWindow(html[i:], 8000)); len(m) == 2 {
+		return wbAcceptPrice(m[1])
 	}
 	return ""
 }
 
 // priceWindow обрезает хвост по границе тега, чтобы не разрубить символ UTF-8.
 func priceWindow(s string) string {
-	const limit = 4000
+	return boundedWindow(s, 4000)
+}
+
+func boundedWindow(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
 	if len(s) <= limit {
 		return s
 	}

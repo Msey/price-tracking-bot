@@ -25,3 +25,5 @@ func demoteChromeWithProfile(string) {}
 func revealChromeWithProfile(string) {}
 
 func demoteChrome(uint32, string, time.Duration) {}
+
+func chromeProfileRunning(string) bool { return false }

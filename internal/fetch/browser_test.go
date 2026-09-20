@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -261,6 +262,9 @@ func TestExtractTakesPriceEarly(t *testing.T) {
 	if !strings.Contains(s, "кошельк") {
 		t.Fatal("нужен ценник с WB Кошельком, не цена без кошелька")
 	}
+	if !strings.Contains(s, "productTitle") {
+		t.Fatal("имя WB из h2.productTitle, не document.title")
+	}
 	if !strings.Contains(s, "6000") {
 		t.Fatal("без подписи банка нужен запасной ценник из webPrice, иначе вкладка висит минуту")
 	}
@@ -398,6 +402,45 @@ func TestWaitJobSendsFocusForShow(t *testing.T) {
 	}
 }
 
+func TestRequestCloseSkipsWhenWantFocus(t *testing.T) {
+	b := newTestBrowser(t)
+	b.wantFocus.Store(true)
+	b.requestClose()
+	if b.closeReq.Load() {
+		t.Fatal("открытую человеком карточку закрывать нельзя")
+	}
+}
+
+func TestChromeAliveAfterLauncherExit(t *testing.T) {
+	c := &chromeProc{profileDir: filepath.Join(t.TempDir(), "chrome-plain")}
+	c.cmd = &exec.Cmd{Process: &os.Process{Pid: 1}}
+	c.chromeDead.Store(true)
+	c.wantFocus.Store(true)
+	if c.alive() {
+		t.Fatal("закрытый Chrome профиля не должен считаться живым")
+	}
+	if c.wantFocus.Load() {
+		t.Fatal("после закрытия окна фокус сбрасывается")
+	}
+}
+
+func TestChromeAliveWhileStarting(t *testing.T) {
+	c := &chromeProc{profileDir: filepath.Join(t.TempDir(), "chrome-plain")}
+	c.cmd = &exec.Cmd{Process: &os.Process{Pid: 1}}
+	if !c.alive() {
+		t.Fatal("пока стартовый процесс жив, Chrome считается живым")
+	}
+}
+
+func TestChromeProfileRunningEmpty(t *testing.T) {
+	if chromeProfileRunning("") {
+		t.Fatal("пустой профиль")
+	}
+	if chromeProfileRunning(filepath.Join(t.TempDir(), "missing-chrome-plain")) {
+		t.Fatal("без процессов профиля")
+	}
+}
+
 func TestPingRequiresAuth(t *testing.T) {
 	b := newTestBrowser(t)
 	res, err := http.Get("http://" + b.addr + "/ext/ping")
@@ -504,6 +547,32 @@ func TestMarkExtSeenIsSafeInParallel(t *testing.T) {
 	b.markExtSeen()
 	if b.extReady() {
 		t.Fatal("без канала расширение не на связи")
+	}
+}
+
+func TestWaitJobPickupAlreadySent(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
+	defer b.Close()
+	j := &extJob{}
+	j.sent.Store(true)
+	if !b.waitJobPickup(j, time.Second) {
+		t.Fatal("уже взятая задача должна пройти сразу")
+	}
+}
+
+func TestWaitJobPickupChromeDead(t *testing.T) {
+	b := NewBrowser(BrowserOptions{ProfileDir: t.TempDir()})
+	defer b.Close()
+	j := &extJob{}
+	start := time.Now()
+	if b.waitJobPickup(j, time.Second) {
+		t.Fatal("без chrome задачу никто не заберёт")
+	}
+	if time.Since(start) > 300*time.Millisecond {
+		t.Fatal("мёртвый chrome должен быть виден сразу, без ожидания pickup")
+	}
+	if b.waitJobPickup(j, 0) {
+		t.Fatal("нулевой timeout не должен ждать")
 	}
 }
 

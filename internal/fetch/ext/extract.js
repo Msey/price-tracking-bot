@@ -3,7 +3,8 @@
 // показывает «Похоже, нет соединения».
 // Скрипт на document_end: цена уходит, как только нужный узел появился
 // в DOM, не дожидаясь картинок и idle. На Ozon ждём ценник
-// «с Ozon Картой» / «с банками Ozon банка», на Wildberries — «с WB Кошельком».
+// «с Ozon Картой» / «с банками Ozon банка», на Wildberries — кнопку
+// priceBlockWalletPrice (иконка кошелька + сумма), не подпись в рекомендациях.
 
 function ldjson() {
   var scripts = document.querySelectorAll('script[type="application/ld+json"]');
@@ -46,12 +47,16 @@ function haystack() {
   return t;
 }
 
-function hasNode(sel) {
+function qs(sel) {
   try {
-    return !!document.querySelector(sel);
+    return document.querySelector(sel);
   } catch (e) {
-    return false;
+    return null;
   }
+}
+
+function hasNode(sel) {
+  return !!qs(sel);
 }
 
 function titleLooksLikeHTTPBan(title) {
@@ -134,6 +139,10 @@ function ozonBankLabel(s) {
 
 function nodeText(el) {
   return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+function priceFrom(sel) {
+  return isolatePrice(nodeText(qs(sel)));
 }
 
 function isolatePrice(s) {
@@ -341,45 +350,31 @@ function nearestWBHeadline(el) {
 }
 
 function wbWalletPrice() {
-  var roots = [];
-  var block = document.querySelector('.product-page__price-block, .price-block');
-  if (block) {
-    roots.push(block);
+  // Сначала класс основного ценника. Обход всего body ловил «с WB Кошельком»
+  // у рекомендаций и отдавал чужую сумму — либо на минуту замирал.
+  var css = priceFrom('[class*="priceBlockWalletPrice"]')
+    || priceFrom('.price-block__wallet-price');
+  if (css) {
+    return css;
   }
-  if (document.body) {
-    roots.push(document.body);
-  }
-  for (var r = 0; r < roots.length; r++) {
-    var nodes = roots[r].querySelectorAll('span, div, p, a, label, h2, button');
+  var root = qs('[class*="priceBlock--"]')
+    || qs('.product-page__price-block, .price-block')
+    || qs('[class*="productPrice"]');
+  if (root) {
+    var nodes = root.querySelectorAll('span, div, p, a, label, h2, button');
     for (var i = 0; i < nodes.length; i++) {
       var t = nodeText(nodes[i]);
       if (t.length < 4 || t.length > 80 || !wbWalletLabel(t)) {
         continue;
       }
-      var price = isolatePrice(nearestWBHeadline(nodes[i]));
-      if (!price) {
-        price = isolatePrice(t);
-      }
+      var price = isolatePrice(nearestWBHeadline(nodes[i])) || isolatePrice(t);
       if (price) {
         return price;
       }
     }
   }
-  var wallet = document.querySelector('.price-block__wallet-price');
-  if (wallet) {
-    var fromWallet = isolatePrice(nodeText(wallet));
-    if (fromWallet) {
-      return fromWallet;
-    }
-  }
-  var finalEl = document.querySelector('.product-page__price-block ins.price-block__final-price, .price-block ins.price-block__final-price');
-  if (finalEl) {
-    var fromFinal = isolatePrice(nodeText(finalEl));
-    if (fromFinal) {
-      return fromFinal;
-    }
-  }
-  return '';
+  return priceFrom('[class*="priceBlockFinalPrice"]')
+    || priceFrom('.product-page__price-block ins.price-block__final-price, .price-block ins.price-block__final-price');
 }
 
 function wbProductTitle() {
@@ -443,7 +438,12 @@ function report() {
   if (window.top !== window) {
     return;
   }
-  var bits = extract();
+  var bits;
+  try {
+    bits = extract();
+  } catch (e) {
+    return;
+  }
   var key = bitsKey(bits);
   if (key === lastKey) {
     return;

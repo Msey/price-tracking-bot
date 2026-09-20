@@ -77,21 +77,24 @@ func (e *extBridge) serve() error {
 	mux.HandleFunc("/ext/ping", e.handlePing)
 	mux.HandleFunc("/ext/wait-job", e.handleWaitJob)
 	mux.HandleFunc("/ext/result", e.handleResult)
-	e.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() { _ = e.srv.Serve(ln) }()
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	e.srv = srv
+	go func() { _ = srv.Serve(ln) }()
 	return nil
 }
 
 func (e *extBridge) stop() {
 	e.job.Store(nil)
-	if e.srv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = e.srv.Shutdown(ctx)
-		cancel()
-		e.srv = nil
-	}
+	srv := e.srv
+	e.srv = nil
 	e.addr = ""
 	e.setExtSeen(nil)
+	if srv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = srv.Shutdown(ctx)
+	cancel()
 }
 
 // poke будит долгий запрос расширения: оно висит на /ext/wait-job и должно
@@ -304,27 +307,28 @@ func (e *extBridge) handleResult(w http.ResponseWriter, r *http.Request) {
 		"css", strings.TrimSpace(msg.Bits.CSSPrice) != "",
 		"ldjson", len(msg.Bits.LDJSON),
 	)
-	e.noteOzonPrice(j, msg)
+	e.notePriceBits(j, msg)
 	pushLatestBits(j.bits, msg.Bits)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// noteOzonPrice пишет в лог две беды, которые иначе видно только по
-// зависшей вкладке: ценника с банком всё нет, или он есть, но не читается.
+// notePriceBits пишет в лог две беды, которые иначе видно только по
+// зависшей вкладке: ценника всё нет, или он есть, но не читается.
 // Каждая — по одному разу на задачу.
-func (e *extBridge) noteOzonPrice(j *extJob, msg extResult) {
-	if j.site != "ozon" {
-		return
-	}
+func (e *extBridge) notePriceBits(j *extJob, msg extResult) {
 	css := strings.TrimSpace(msg.Bits.CSSPrice)
 	if css == "" {
 		if j.notedWait.CompareAndSwap(false, true) {
-			e.log.Warn("жду ценник Ozon с банком", "url", j.url, "href", msg.Href, "title", msg.Bits.Title)
+			waitMsg := "жду ценник"
+			if j.site == "ozon" {
+				waitMsg = "жду ценник Ozon с банком"
+			}
+			e.log.Warn(waitMsg, "site", j.site, "url", j.url, "href", msg.Href, "title", diaglog.Clip(msg.Bits.Title, 120))
 		}
 		return
 	}
 	if _, ok := parseDisplayedPrice(css); !ok && j.notedBadCSS.CompareAndSwap(false, true) {
-		e.log.Warn("ценник Ozon не разобрался", "css", diaglog.Clip(css, 80), "url", j.url)
+		e.log.Warn("ценник не разобрался", "site", j.site, "css", diaglog.Clip(css, 80), "url", j.url)
 	}
 }
 

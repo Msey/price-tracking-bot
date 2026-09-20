@@ -188,6 +188,13 @@ func chromePIDsForProfile(rootPID uint32, profile string) map[uint32]struct{} {
 	return out
 }
 
+func chromeProfileRunning(profile string) bool {
+	if strings.TrimSpace(profile) == "" {
+		return false
+	}
+	return len(chromePIDsForProfile(0, profile)) > 0
+}
+
 func addDescendants(root uint32, into map[uint32]struct{}) {
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {

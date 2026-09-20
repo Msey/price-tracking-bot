@@ -26,7 +26,17 @@ type chromeProc struct {
 }
 
 func (c *chromeProc) alive() bool {
-	return c.cmd != nil && c.cmd.Process != nil && !c.chromeDead.Load()
+	// Стартовый chrome.exe часто сразу выходит, окно живёт в дочернем
+	// процессе профиля. Если смотреть только на лаунчер, бот поднимает
+	// второй Chrome на тот же профиль, и закрыть окно уже нельзя.
+	if chromeProfileRunning(c.profileDir) {
+		return true
+	}
+	if c.cmd != nil && c.cmd.Process != nil && !c.chromeDead.Load() {
+		return true
+	}
+	c.wantFocus.Store(false)
+	return false
 }
 
 // start чистит следы прошлого запуска и поднимает Chrome с расширением.

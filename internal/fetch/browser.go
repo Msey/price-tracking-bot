@@ -14,6 +14,8 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
+const jobPickupWait = 8 * time.Second
+
 // Browser — один долгоживущий Chrome на все магазины. Страницы читает
 // расширение (extBridge), процессом браузера занимается chromeProc,
 // файлы расширения выкладывает extBundle. Сам Browser только сводит их
@@ -116,7 +118,7 @@ func (b *Browser) Show(p storage.Product) {
 	b.poke()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) && !j.sent.Load() {
-		if b.chromeDead.Load() {
+		if !b.alive() {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -150,15 +152,15 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 		timeout = pageWait
 	}
 	j := &extJob{
-		url:  p.URL,
-		site: p.Site,
-		city: p.City,
-		bits: make(chan pageBits, 8),
+		url:   p.URL,
+		site:  p.Site,
+		city:  p.City,
+		focus: b.wantFocus.Load(),
+		bits:  make(chan pageBits, 8),
 	}
 	b.job.Store(j)
 	defer b.job.CompareAndSwap(j, nil)
 	b.human.Store(false)
-	b.wantFocus.Store(false)
 	b.log.Info("задача расширению", "site", p.Site, "url", p.URL, "timeout", timeout)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -174,11 +176,21 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 	if err := b.ensureLocked(p.URL); err != nil {
 		return Snapshot{}, err
 	}
+	if !j.sent.Load() && !b.waitJobPickup(j, jobPickupWait) {
+		b.log.Warn("расширение не взяло задачу — перезапускаю chrome")
+		b.kill()
+		b.setExtSeen(make(chan struct{}))
+		if err := b.ensureLocked(p.URL); err != nil {
+			return Snapshot{}, err
+		}
+	}
 
 	snap, err := waitForBits(ctx, timeout, j.bits, parse, func(bits pageBits) {
 		b.human.Store(true)
 		b.noteChallenge(bits)
-		b.reveal()
+		if b.wantFocus.CompareAndSwap(false, true) {
+			b.reveal()
+		}
 	}, pol)
 	b.job.CompareAndSwap(j, nil)
 	if err == nil || !b.human.Load() {
@@ -189,8 +201,12 @@ func (b *Browser) doLocked(ctx context.Context, timeout time.Duration, p storage
 
 // requestClose просит расширение закрыть вкладку. Окно Chrome не гасим:
 // следующий замер тогда снова вылез бы на передний план. Если человек
-// разбирается с капчей, вкладку тоже оставляем.
+// смотрит карточку или капчу, вкладку тоже оставляем — иначе расширение
+// снова открывает окно, и закрыть его уже нельзя.
 func (b *Browser) requestClose() {
+	if b.human.Load() || b.wantFocus.Load() {
+		return
+	}
 	b.closeReq.Store(true)
 	b.poke()
 	b.log.Info("закрываю вкладку магазина")
@@ -200,9 +216,6 @@ func (b *Browser) requestClose() {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
-	}
-	if b.human.Load() {
-		return
 	}
 	b.demote()
 }
@@ -263,6 +276,31 @@ func (b *Browser) ensureLocked(startURL string) error {
 	return fmt.Errorf("chrome: расширение не подключилось")
 }
 
+// waitJobPickup — расширение забрало задачу. Если service worker MV3 уснул,
+// poke() никто не слушает, и без этой проверки карточка минуту ждёт впустую.
+func (b *Browser) waitJobPickup(j *extJob, d time.Duration) bool {
+	if j == nil {
+		return false
+	}
+	if j.sent.Load() {
+		return true
+	}
+	if d <= 0 || !b.alive() {
+		return false
+	}
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if j.sent.Load() {
+			return true
+		}
+		if !b.alive() {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return j.sent.Load()
+}
+
 func (b *Browser) launchLocked(extDir, startURL string) error {
 	exceptID := ""
 	if b.extID != "" && b.extInProfileLocked() {
@@ -318,7 +356,7 @@ func (b *Browser) recheckExtInProfile() bool {
 func (b *Browser) waitExtLocked(d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if b.chromeDead.Load() {
+		if !b.alive() {
 			return false
 		}
 		if b.extReady() {
