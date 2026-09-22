@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	swShowNoActivate       = 4
 	swRestore              = 9
 	swpNoActivate          = 0x0010
 	swpShowWindow          = 0x0040
@@ -100,9 +99,8 @@ func demoteChrome(rootPID uint32, profile string, hold time.Duration) {
 				uintptr(hwnd), hwndBottom,
 				uintptr(x), uintptr(y),
 				uintptr(chromeWindowW), uintptr(chromeWindowH),
-				swpNoActivate|swpShowWindow,
+				swpNoActivate,
 			)
-			_, _, _ = procShowWindow.Call(uintptr(hwnd), swShowNoActivate)
 		}
 		if !time.Now().Before(deadline) {
 			return

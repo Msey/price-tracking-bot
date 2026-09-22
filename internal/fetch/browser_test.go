@@ -467,6 +467,20 @@ func TestPingRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestPlaceWindowKeepsBackgroundCloseable(t *testing.T) {
+	raw, err := extFS.ReadFile("ext/background.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "var update = { focused: !!focus };") {
+		t.Fatal("фоновое окно не должно получать state:normal — иначе его нельзя закрыть")
+	}
+	if strings.Contains(s, "focused: !!focus, state:") {
+		t.Fatal("state на фоне поднимает закрывающееся окно")
+	}
+}
+
 func TestCORSRejectsWebsiteOrigin(t *testing.T) {
 	b := newTestBrowser(t)
 	req, err := http.NewRequest(http.MethodOptions, "http://"+b.addr+"/ext/wait-job", nil)

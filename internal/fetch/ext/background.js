@@ -86,10 +86,13 @@ async function placeWindow(windowId, job) {
     return;
   }
   var focus = job && (job.focus === '1' || job.focus === true);
-  var update = { focused: !!focus, state: 'normal', width: 1280, height: 900 };
+  var update = { focused: !!focus };
   if (focus) {
+    update.state = 'normal';
     update.left = 80;
     update.top = 80;
+    update.width = 1280;
+    update.height = 900;
   } else {
     var left = parseInt(job && job.left, 10);
     var top = parseInt(job && job.top, 10);
@@ -101,6 +104,8 @@ async function placeWindow(windowId, job) {
     }
     update.left = left;
     update.top = top;
+    update.width = 1280;
+    update.height = 900;
   }
   try {
     await chrome.windows.update(windowId, update);
