@@ -97,9 +97,11 @@ func TestCheckOneNotifiesOnFirstChange(t *testing.T) {
 type missingDNS struct {
 	miss  bool
 	price int64
+	calls int
 }
 
 func (f *missingDNS) Fetch(context.Context, storage.Product) (fetch.Snapshot, error) {
+	f.calls++
 	if f.miss {
 		return fetch.Snapshot{}, fetch.ErrNoPrice
 	}
@@ -171,6 +173,7 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{
 		Interval: 20 * time.Minute, FetchGap: 30 * time.Second, PerCycle: 8, StartupDelay: time.Minute,
 	}, nil)
+	tr.recheckGap = 0
 
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
@@ -178,6 +181,9 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	dns.miss = true
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
+	}
+	if dns.calls != 4 {
+		t.Fatalf("запросов %d, ожидалось 4: база и три замера пропажи", dns.calls)
 	}
 	hist, err := store.LastSnapshots(ctx, p.ID, 10)
 	if err != nil {
@@ -192,8 +198,17 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	if !hist[1].Available || hist[1].PriceKopecks != 15500 {
 		t.Fatalf("предыдущий живой замер: %+v", hist[1])
 	}
+	if notes.n != 1 || !strings.Contains(notes.msgs[0], "пропал") {
+		t.Fatalf("подтверждённая пропажа должна уведомить один раз, получено %+v", notes.msgs)
+	}
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if dns.calls != 5 {
+		t.Fatalf("повторная пропажа не должна снова открывать карточку трижды, запросов %d", dns.calls)
+	}
 	if notes.n != 1 {
-		t.Fatalf("пропажа после известной цены должна сразу уведомить, получено %d", notes.n)
+		t.Fatalf("о той же пропаже второе письмо не нужно, получено %d", notes.n)
 	}
 
 	empty, _, err := store.AddSubscription(ctx, 7, "dns", "aaaaaaaaaaaaaaaa", "https://www.dns-shop.ru/product/aaaaaaaaaaaaaaaa/", "moscow")
@@ -210,6 +225,9 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 	if len(none) != 1 || none[0].Available || none[0].PriceKopecks != 0 {
 		t.Fatalf("без истории пишем нулевой серый замер, чтобы сдвинуть очередь: %+v", none)
 	}
+	if dns.calls != 6 {
+		t.Fatalf("первая проверка без цены — один запрос, не перепроверка, запросов %d", dns.calls)
+	}
 	if notes.n != 1 {
 		t.Fatal("первая проверка без цены не должна писать в чат")
 	}
@@ -221,6 +239,220 @@ func TestCheckOneRecordsMissingPrice(t *testing.T) {
 		if p.ID == empty.ID {
 			t.Fatal("только что проверенный товар без цены не должен снова быть в очереди")
 		}
+	}
+}
+
+type scriptedStep struct {
+	snap fetch.Snapshot
+	err  error
+}
+
+type scriptedFetch struct {
+	steps []scriptedStep
+	n     int
+}
+
+func (f *scriptedFetch) Fetch(context.Context, storage.Product) (fetch.Snapshot, error) {
+	if f.n >= len(f.steps) {
+		return fetch.Snapshot{}, errors.New("лишний запрос карточки")
+	}
+	step := f.steps[f.n]
+	f.n++
+	return step.snap, step.err
+}
+
+func (f *scriptedFetch) Paused() (time.Time, string, bool) { return time.Time{}, "", false }
+
+func stockSnap(kopecks int64, available bool) fetch.Snapshot {
+	return fetch.Snapshot{Name: "Товар", PriceKopecks: kopecks, Currency: "RUB", Available: available}
+}
+
+func newTracked(t *testing.T, f Fetcher) (*Tracker, *storage.Store, storage.Product, *fakeNotify) {
+	t.Helper()
+	store, err := storage.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	p, _, err := store.AddSubscription(context.Background(), 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := &fakeNotify{}
+	tr := New(store, map[string]Fetcher{"dns": f}, notes, Config{}, nil)
+	tr.recheckGap = 0
+	return tr, store, p, notes
+}
+
+func TestDisappearanceRecoversBeforeAnnounce(t *testing.T) {
+	ctx := context.Background()
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, true)},
+		{err: fetch.ErrNoPrice},
+		{snap: stockSnap(10000, true)},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 0 {
+		t.Fatalf("живой повтор не должен писать о пропаже: %+v", notes.msgs)
+	}
+	if f.n != 3 {
+		t.Fatalf("запросов %d, хватило первого повтора", f.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || !hist[0].Available || !hist[1].Available {
+		t.Fatalf("сбой не должен оставить серую точку: %+v", hist)
+	}
+}
+
+func TestDisappearanceSecondRecheckCanStillRecover(t *testing.T) {
+	ctx := context.Background()
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, true)},
+		{err: fetch.ErrNoPrice},
+		{err: fetch.ErrNoPrice},
+		{snap: stockSnap(9000, true)},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 || strings.Contains(notes.msgs[0], "пропал") {
+		t.Fatalf("нашлась новая цена, не пропажа: %+v", notes.msgs)
+	}
+	if f.n != 4 {
+		t.Fatalf("запросов %d, нужны оба повтора", f.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || !hist[0].Available || hist[0].PriceKopecks != 9000 {
+		t.Fatalf("в истории должна остаться живая цена: %+v", hist)
+	}
+}
+
+func TestDisappearanceHardErrorIsNotStockout(t *testing.T) {
+	ctx := context.Background()
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, true)},
+		{err: fetch.ErrNoPrice},
+		{err: errors.New("connection reset")},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	err := tr.checkOne(ctx, p)
+	if err == nil || errors.Is(err, fetch.ErrNoPrice) {
+		t.Fatalf("обрыв сети нельзя превращать в пропажу: %v", err)
+	}
+	if notes.n != 0 {
+		t.Fatalf("писем %d", notes.n)
+	}
+	if f.n != 3 {
+		t.Fatalf("после обрыва третий замер не нужен, запросов %d", f.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || !hist[0].Available {
+		t.Fatalf("неподтверждённая пропажа не пишется: %+v", hist)
+	}
+}
+
+func TestDisappearanceCancelDoesNotWaitOrRecord(t *testing.T) {
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, true)},
+		{err: fetch.ErrNoPrice},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	tr.recheckGap = 30 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	err := tr.checkOne(ctx, p)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("отмена: %v", err)
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatal("отмена не должна ждать паузу перепроверки")
+	}
+	if notes.n != 0 || f.n != 2 {
+		t.Fatalf("писем %d, запросов %d", notes.n, f.n)
+	}
+	hist, err := store.LastSnapshots(context.Background(), p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || !hist[0].Available {
+		t.Fatalf("отменённая перепроверка не должна писать серую точку: %+v", hist)
+	}
+}
+
+func TestExplicitUnavailableNeedsTwoRechecks(t *testing.T) {
+	ctx := context.Background()
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, true)},
+		{snap: stockSnap(10000, false)},
+		{snap: stockSnap(10000, false)},
+		{snap: stockSnap(10000, false)},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 || !strings.Contains(notes.msgs[0], "пропал") || strings.Contains(notes.msgs[0], "выросла") {
+		t.Fatalf("письмо: %+v", notes.msgs)
+	}
+	if f.n != 4 {
+		t.Fatalf("запросов %d", f.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || hist[0].Available || hist[0].PriceKopecks != 10000 {
+		t.Fatalf("одна серая точка после трёх согласий: %+v", hist)
+	}
+}
+
+func TestFirstUnavailableIsNotADisappearance(t *testing.T) {
+	ctx := context.Background()
+	f := &scriptedFetch{steps: []scriptedStep{
+		{snap: stockSnap(10000, false)},
+	}}
+	tr, store, p, notes := newTracked(t, f)
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 0 || f.n != 1 {
+		t.Fatalf("писем %d, запросов %d", notes.n, f.n)
+	}
+	hist, err := store.LastSnapshots(ctx, p.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].Available {
+		t.Fatalf("первая карточка без наличия — база, не перепроверка: %+v", hist)
 	}
 }
 
@@ -584,6 +816,12 @@ func TestStatusTextCountsDown(t *testing.T) {
 	got = tr.StatusText()
 	if !strings.Contains(got, "Пауза ") || !strings.Contains(got, "Xiaomi") {
 		t.Fatalf("пауза между товарами: %q", got)
+	}
+	tr.setStatus("%s", "Перепроверяю наличие · 1/2 · Xiaomi")
+	tr.setUntil(time.Now().Add(3*time.Second), "recheck")
+	got = tr.StatusText()
+	if !strings.Contains(got, "Перепроверяю наличие") || (!strings.Contains(got, "3 с") && !strings.Contains(got, "2 с")) {
+		t.Fatalf("пауза перепроверки: %q", got)
 	}
 	tr.setStatus("%s", "Ошибка dns · сайт показал защиту")
 	tr.setUntil(time.Now().Add(20*time.Minute), "cycle")

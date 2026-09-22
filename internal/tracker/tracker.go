@@ -42,21 +42,28 @@ type Config struct {
 // серые точки и сравнить с предыдущей известной ценой.
 const decisionHistoryLimit = 16
 
+// disappearanceRecheckGap — пауза между подозрением «товара нет» и
+// повторным заходом. Ноль нельзя: три открытия подряд магазин читает
+// как атаку. Полный FETCH_GAP тоже нельзя: это уже пауза между разными
+// товарами, и проверка одной карточки растянулась бы на минуту.
+const disappearanceRecheckGap = 3 * time.Second
+
 type Tracker struct {
-	store    *storage.Store
-	fetchers map[string]Fetcher
-	notify   Notifier
-	cfg      Config
-	log      *slog.Logger
-	lastHit  time.Time
-	kick     chan struct{}
-	pending  atomic.Bool
-	busy     atomic.Bool
-	statusMu sync.Mutex
-	status   string
-	until    time.Time
-	waitKind string
-	done     chan struct{}
+	store      *storage.Store
+	fetchers   map[string]Fetcher
+	notify     Notifier
+	cfg        Config
+	log        *slog.Logger
+	lastHit    time.Time
+	recheckGap time.Duration
+	kick       chan struct{}
+	pending    atomic.Bool
+	busy       atomic.Bool
+	statusMu   sync.Mutex
+	status     string
+	until      time.Time
+	waitKind   string
+	done       chan struct{}
 }
 
 func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg Config, log *slog.Logger) *Tracker {
@@ -77,13 +84,14 @@ func New(store *storage.Store, fetchers map[string]Fetcher, notify Notifier, cfg
 	}
 	cfg.Interval = minCheckInterval(fetchers)
 	return &Tracker{
-		store:    store,
-		fetchers: fetchers,
-		notify:   notify,
-		cfg:      cfg,
-		log:      log,
-		kick:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		store:      store,
+		fetchers:   fetchers,
+		notify:     notify,
+		cfg:        cfg,
+		log:        log,
+		recheckGap: disappearanceRecheckGap,
+		kick:       make(chan struct{}, 1),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -130,6 +138,11 @@ func (t *Tracker) StatusText() string {
 				return "Пауза " + cd + " до следующего товара · " + t.status
 			}
 			return "Пауза " + cd + " до следующего товара"
+		case "recheck":
+			if t.status != "" {
+				return t.status + " · " + cd
+			}
+			return "Перепроверяю наличие · " + cd
 		default:
 			return "Следующая проверка через " + cd
 		}
@@ -355,7 +368,7 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 	if f == nil {
 		return fmt.Errorf("нет загрузчика для сайта %s", p.Site)
 	}
-	snap, err := f.Fetch(ctx, p)
+	snap, err := t.readCard(ctx, p, f)
 	if errors.Is(err, fetch.ErrNoPrice) {
 		return t.recordMissing(ctx, p)
 	}
@@ -364,6 +377,64 @@ func (t *Tracker) checkOne(ctx context.Context, p storage.Product) error {
 	}
 	t.log.Info("цена записана", "site", p.Site, "product", p.ID, "name", snap.Name, "kopecks", snap.PriceKopecks, "available", snap.Available)
 	return t.afterSnapshot(ctx, p, snap.Name, snap.PriceKopecks, snap.Currency, snap.Available)
+}
+
+// readCard читает карточку. Если замер впервые выглядит как пропажа
+// товара, который был в наличии, карточку открывают ещё
+// disappearanceRechecks раз. В историю и в чат попадает только итог:
+// неподтверждённый сбой страницы серую точку не рисует.
+func (t *Tracker) readCard(ctx context.Context, p storage.Product, f Fetcher) (fetch.Snapshot, error) {
+	snap, err := t.fetchCard(ctx, f, p)
+	if !readingLooksGone(err, snap.Available) {
+		return snap, err
+	}
+	prevInStock, stockErr := t.previouslyInStock(ctx, p.ID)
+	if stockErr != nil {
+		return fetch.Snapshot{}, stockErr
+	}
+	if !suspectDisappearance(prevInStock, err, snap.Available) {
+		return snap, err
+	}
+	t.log.Info("похоже, что товара нет — перепроверяю", "product", p.ID, "url", p.URL)
+	for i := 1; i <= disappearanceRechecks; i++ {
+		t.setStatus("Перепроверяю наличие · %d/%d · %s", i, disappearanceRechecks, p.Title())
+		if waitErr := t.pauseBeforeRecheck(ctx); waitErr != nil {
+			return fetch.Snapshot{}, waitErr
+		}
+		snap, err = t.fetchCard(ctx, f, p)
+		if !readingLooksGone(err, snap.Available) {
+			t.log.Info("перепроверка не подтвердила пропажу", "product", p.ID, "try", i, "available", snap.Available, "error", err)
+			return snap, err
+		}
+	}
+	t.log.Info("пропажа подтверждена", "product", p.ID, "checks", 1+disappearanceRechecks)
+	return snap, err
+}
+
+func (t *Tracker) fetchCard(ctx context.Context, f Fetcher, p storage.Product) (fetch.Snapshot, error) {
+	t.lastHit = time.Now()
+	return f.Fetch(ctx, p)
+}
+
+func (t *Tracker) previouslyInStock(ctx context.Context, productID int64) (bool, error) {
+	last, err := t.store.LastSnapshots(ctx, productID, 1)
+	if err != nil || len(last) == 0 {
+		return false, err
+	}
+	return last[0].Available, nil
+}
+
+// pauseBeforeRecheck не смотрит на kick: «Проверить цены» не должно
+// обрывать подтверждение пропажи и ставить ещё один полный цикл.
+func (t *Tracker) pauseBeforeRecheck(ctx context.Context) error {
+	if t.recheckGap > 0 {
+		t.setUntil(time.Now().Add(t.recheckGap), "recheck")
+		defer t.clearUntil()
+	}
+	if !wait.Sleep(ctx, t.recheckGap) {
+		return ctx.Err()
+	}
+	return nil
 }
 
 // recordMissing — цена на странице не нашлась: товар сняли или закончился.

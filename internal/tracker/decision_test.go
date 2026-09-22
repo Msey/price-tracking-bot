@@ -1,8 +1,12 @@
 package tracker
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/storage"
 )
 
@@ -67,6 +71,38 @@ func TestDecidePlaceholderIsNotAPrice(t *testing.T) {
 	})
 	if !d.Baseline || d.Notify {
 		t.Fatalf("первая настоящая цена после пустого замера: %+v", d)
+	}
+}
+
+func TestSuspectDisappearance(t *testing.T) {
+	if disappearanceRechecks < 2 {
+		t.Fatalf("пропажу нужно перепроверить минимум дважды, сейчас %d", disappearanceRechecks)
+	}
+	wrapped := fmt.Errorf("карточка: %w", fetch.ErrNoPrice)
+	tests := []struct {
+		name      string
+		prev      bool
+		err       error
+		available bool
+		want      bool
+	}{
+		{"в наличии, страница живая", true, nil, true, false},
+		{"в наличии, карточка сказала нет", true, nil, false, true},
+		{"в наличии, цена не найдена", true, fetch.ErrNoPrice, false, true},
+		{"обёрнутая цена не найдена", true, wrapped, false, true},
+		{"обрыв сети — не пропажа", true, errors.New("connection reset"), false, false},
+		{"таймаут — не пропажа", true, context.DeadlineExceeded, false, false},
+		{"капча — не пропажа", true, fetch.ErrChallenge, false, false},
+		{"уже не было в наличии", false, fetch.ErrNoPrice, false, false},
+		{"первой цены ещё не было", false, nil, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := suspectDisappearance(tt.prev, tt.err, tt.available)
+			if got != tt.want {
+				t.Fatalf("suspect = %v, ожидалось %v", got, tt.want)
+			}
+		})
 	}
 }
 
