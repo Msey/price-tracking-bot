@@ -186,6 +186,51 @@ func TestTipNeededDistinct(t *testing.T) {
 	}
 }
 
+func TestRectsOverlap(t *testing.T) {
+	a := walk.Rectangle{X: 10, Y: 10, Width: 20, Height: 10}
+	if !rectsOverlap(a, walk.Rectangle{X: 25, Y: 15, Width: 10, Height: 10}) {
+		t.Fatal("частичное пересечение")
+	}
+	if rectsOverlap(a, walk.Rectangle{X: 30, Y: 10, Width: 5, Height: 5}) {
+		t.Fatal("касание правым краем — не пересечение")
+	}
+	if rectsOverlap(a, walk.Rectangle{X: 10, Y: 20, Width: 5, Height: 5}) {
+		t.Fatal("касание нижним краем — не пересечение")
+	}
+	if rectsOverlap(a, walk.Rectangle{X: 0, Y: 0, Width: 0, Height: 10}) {
+		t.Fatal("нулевая ширина")
+	}
+	if rectsOverlap(walk.Rectangle{}, walk.Rectangle{X: 0, Y: 0, Width: 5, Height: 5}) {
+		t.Fatal("пустой прямоугольник")
+	}
+}
+
+func TestCoversChartAboveSkipsFirstRow(t *testing.T) {
+	b := &board{tipItem: 0}
+	tip := walk.Rectangle{X: 0, Y: 0, Width: 40, Height: 20}
+	if b.coversChartAbove(tip) {
+		t.Fatal("у первой строки нет графика выше")
+	}
+	b.tipItem = -1
+	if b.coversChartAbove(tip) {
+		t.Fatal("без строки перекрывать нечего")
+	}
+}
+
+func TestDismissCoveringTip(t *testing.T) {
+	b := &board{tipItem: 2, tipNode: 1, hover: 2}
+	b.dismissCoveringTip()
+	if b.tipItem != 2 || b.tipNode != 1 {
+		t.Fatal("рамка над своим графиком должна остаться")
+	}
+	b.tipCoversAbove = true
+	b.dismissCoveringTip()
+	if b.tipItem != -1 || b.tipNode != -1 || b.tipCoversAbove {
+		t.Fatalf("перекрывающая рамка должна погаснуть: item=%d node=%d covers=%v", b.tipItem, b.tipNode, b.tipCoversAbove)
+	}
+	b.dismissCoveringTip()
+}
+
 func TestHideTipNil(t *testing.T) {
 	var b board
 	b.hideTip()

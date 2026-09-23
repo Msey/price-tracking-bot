@@ -86,6 +86,9 @@ func (b *board) forwardTipInput(host *walk.Composite) {
 	host.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
 		b.onWheel(walk.MouseWheelEventDelta(button))
 	})
+	host.MouseMove().Attach(func(_, _ int, _ walk.MouseButton) {
+		b.dismissCoveringTip()
+	})
 	if b.tipFace == nil {
 		return
 	}
@@ -94,6 +97,9 @@ func (b *board) forwardTipInput(host *walk.Composite) {
 	})
 	b.tipFace.MouseWheel().Attach(func(_, _ int, button walk.MouseButton) {
 		b.onWheel(walk.MouseWheelEventDelta(button))
+	})
+	b.tipFace.MouseMove().Attach(func(_, _ int, _ walk.MouseButton) {
+		b.dismissCoveringTip()
 	})
 }
 
@@ -290,6 +296,31 @@ func (b *board) syncTip() {
 	if (shown || textChanged) && b.tipFace != nil {
 		b.tipFace.Invalidate()
 	}
+	b.tipCoversAbove = b.coversChartAbove(r)
+}
+
+// coversChartAbove — рамка закрыла график предыдущей строки.
+// У первой строки такого графика нет.
+func (b *board) coversChartAbove(tip walk.Rectangle) bool {
+	if b == nil || b.tipItem <= 0 {
+		return false
+	}
+	m, row := b.rowBounds(b.tipItem - 1)
+	return rectsOverlap(tip, m.chartRect(row))
+}
+
+// dismissCoveringTip гасит подсказку, которая лежит на графике строки выше.
+// Обычную рамку над своим узлом не трогает. Обработчик вешается один раз
+// при создании рамки и умирает вместе с ней.
+func (b *board) dismissCoveringTip() {
+	if b == nil || !b.tipCoversAbove {
+		return
+	}
+	b.tipItem, b.tipNode = -1, -1
+	b.hideTip()
+	if b.widget != nil {
+		b.widget.Invalidate()
+	}
 }
 
 func (b *board) hideTip() {
@@ -299,6 +330,7 @@ func (b *board) hideTip() {
 	b.tipDate = ""
 	b.tipPrice = ""
 	b.tipMiss = false
+	b.tipCoversAbove = false
 }
 
 func (b *board) ensureTipSize(date, price string) {

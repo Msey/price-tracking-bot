@@ -56,6 +56,10 @@ type board struct {
 	tipH     int
 	tipDPI   int
 	tipMiss  bool
+	// tipCoversAbove — рамка подсказки пересекла график строки выше.
+	// Пока это так, движение мыши по рамке её гасит: список под окном
+	// рамки событий не получает.
+	tipCoversAbove bool
 	// distinct — на графике только смена цены или наличия, плато из
 	// одинаковых соседних узлов схлопывается в один.
 	distinct bool
@@ -254,6 +258,14 @@ func (m boardMetrics) trashRect(row walk.Rectangle) walk.Rectangle {
 
 func rectContains(r walk.Rectangle, x, y int) bool {
 	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
+}
+
+// rectsOverlap — пересечение полуоткрытых прямоугольников, как у rectContains.
+// Касание краем пересечением не считается.
+func rectsOverlap(a, b walk.Rectangle) bool {
+	return a.Width > 0 && a.Height > 0 && b.Width > 0 && b.Height > 0 &&
+		a.X < b.X+b.Width && b.X < a.X+a.Width &&
+		a.Y < b.Y+b.Height && b.Y < a.Y+a.Height
 }
 
 func (b *board) rowIndex(y int) int {
