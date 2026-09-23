@@ -306,6 +306,7 @@ func (e *extBridge) handleResult(w http.ResponseWriter, r *http.Request) {
 		"blocked", msg.Bits.Blocked,
 		"css", strings.TrimSpace(msg.Bits.CSSPrice) != "",
 		"ldjson", len(msg.Bits.LDJSON),
+		"soldOut", msg.Bits.SoldOut,
 	)
 	e.notePriceBits(j, msg)
 	pushLatestBits(j.bits, msg.Bits)

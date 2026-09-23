@@ -308,9 +308,41 @@ function extractOzon() {
     blocked: blocked,
     ldjson: ldjson(),
     cssPrice: css,
+    soldOut: ozonSoldOut(),
     name: h1 ? (h1.textContent || '').trim() : '',
     title: title
   };
+}
+
+// На карточке два одинаковых виджета: скрытый шаблон и видимая кнопка.
+// querySelector берёт первый и принял бы «В корзину» за отсутствие.
+function ozonWidgetShown(sel) {
+  var nodes;
+  try {
+    nodes = document.querySelectorAll(sel);
+  } catch (e) {
+    return false;
+  }
+  for (var i = 0; i < nodes.length; i++) {
+    var el = nodes[i];
+    if (!el.getClientRects) {
+      continue;
+    }
+    var rects = el.getClientRects();
+    for (var r = 0; r < rects.length; r++) {
+      if (rects[r].width > 0 && rects[r].height > 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function ozonSoldOut() {
+  if (ozonWidgetShown('[data-widget="webAddToCart"]')) {
+    return false;
+  }
+  return ozonWidgetShown('[data-widget="webOutOfStock"]');
 }
 
 function wbWalletLabel(s) {
@@ -431,7 +463,7 @@ function bitsKey(bits) {
   // заново, даже если цена и заголовок совпали.
   return (location.href || '') + '\0' + (bits.cssPrice || '') + '\0' + ld + '\0'
     + (bits.title || '') + '\0'
-    + !!bits.challenge + !!bits.blocked + !!bits.qrator;
+    + !!bits.challenge + !!bits.blocked + !!bits.qrator + !!bits.soldOut;
 }
 
 function report() {

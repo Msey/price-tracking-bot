@@ -61,6 +61,120 @@ func TestNewOzonKeepsBankPricePolicy(t *testing.T) {
 	}
 }
 
+func TestCardPriceAvailability(t *testing.T) {
+	const schemaOut = `{"@type":"Product","name":"Набор","offers":{"@type":"Offer","price":"525","priceCurrency":"RUB","availability":"https://schema.org/OutOfStock"}}`
+	const schemaIn = `{"@type":"Product","name":"Набор","offers":{"price":"481","priceCurrency":"RUB","availability":"https://schema.org/InStock"}}`
+	tests := []struct {
+		name      string
+		bits      pageBits
+		wantAvail bool
+		wantPrice int64
+		wantName  string
+	}{
+		{
+			name:      "ozon: разметка OutOfStock не отменяет ценник",
+			bits:      pageBits{skipLDJSON: true, CSSPrice: "481 ₽", Name: "Набор саморезов", LDJSON: []string{schemaOut}},
+			wantAvail: true,
+			wantPrice: 48100,
+			wantName:  "Набор саморезов",
+		},
+		{
+			name:      "ozon: имя из разметки, наличие всё равно с карточки",
+			bits:      pageBits{skipLDJSON: true, CSSPrice: "481 ₽", LDJSON: []string{schemaOut}},
+			wantAvail: true,
+			wantPrice: 48100,
+			wantName:  "Набор",
+		},
+		{
+			name:      "ozon: нет разметки — ценник значит в наличии",
+			bits:      pageBits{skipLDJSON: true, CSSPrice: "481 ₽", Name: "Набор"},
+			wantAvail: true,
+			wantPrice: 48100,
+			wantName:  "Набор",
+		},
+		{
+			name:      "ozon: виджет «закончился» важнее ценника и InStock",
+			bits:      pageBits{skipLDJSON: true, SoldOut: true, CSSPrice: "481 ₽", LDJSON: []string{schemaIn}},
+			wantAvail: false,
+			wantPrice: 48100,
+			wantName:  "Набор",
+		},
+		{
+			name:      "ozon: виджет «закончился» без разметки",
+			bits:      pageBits{skipLDJSON: true, SoldOut: true, CSSPrice: "481 ₽", Name: "Набор"},
+			wantAvail: false,
+			wantPrice: 48100,
+			wantName:  "Набор",
+		},
+		{
+			name:      "не ozon: наличие из разметки",
+			bits:      pageBits{CSSPrice: "1 000 ₽", LDJSON: []string{`{"@type":"Product","name":"X","offers":{"price":"1000","priceCurrency":"RUB","availability":"https://schema.org/OutOfStock"}}`}},
+			wantAvail: false,
+			wantPrice: 100000,
+			wantName:  "X",
+		},
+		{
+			name:      "не ozon: виджет «закончился» важнее InStock",
+			bits:      pageBits{SoldOut: true, CSSPrice: "481 ₽", Name: "Набор", LDJSON: []string{schemaIn}},
+			wantAvail: false,
+			wantPrice: 48100,
+			wantName:  "Набор",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snap, err := parseVisiblePriceBits(tt.bits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.Available != tt.wantAvail {
+				t.Fatalf("available %v, ожидалось %v", snap.Available, tt.wantAvail)
+			}
+			if snap.PriceKopecks != tt.wantPrice {
+				t.Fatalf("цена %d, ожидалось %d", snap.PriceKopecks, tt.wantPrice)
+			}
+			if snap.Name != tt.wantName {
+				t.Fatalf("имя %q, ожидалось %q", snap.Name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestVisiblePriceFallbackKeepsSchemaStock(t *testing.T) {
+	const inStock = `{"@type":"Product","name":"Набор","offers":{"price":"525","priceCurrency":"RUB","availability":"https://schema.org/InStock"}}`
+	const outOfStock = `{"@type":"Product","name":"Набор","offers":{"price":"525","priceCurrency":"RUB","availability":"https://schema.org/OutOfStock"}}`
+	tests := []struct {
+		name      string
+		bits      pageBits
+		wantAvail bool
+	}{
+		{
+			name:      "без ценника наличие из разметки",
+			bits:      pageBits{LDJSON: []string{outOfStock}},
+			wantAvail: false,
+		},
+		{
+			name:      "виджет «закончился» важнее разметки и без ценника",
+			bits:      pageBits{SoldOut: true, LDJSON: []string{inStock}},
+			wantAvail: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			snap, err := parseVisiblePriceBits(tt.bits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.PriceKopecks != 52500 {
+				t.Fatalf("цена %d, ожидалось 52500", snap.PriceKopecks)
+			}
+			if snap.Available != tt.wantAvail {
+				t.Fatalf("available %v, ожидалось %v", snap.Available, tt.wantAvail)
+			}
+		})
+	}
+}
+
 func TestParseVisiblePriceBitsSkipsLDJSON(t *testing.T) {
 	_, err := parseVisiblePriceBits(pageBits{
 		skipLDJSON: true,

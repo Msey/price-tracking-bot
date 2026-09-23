@@ -36,6 +36,9 @@ type pageBits struct {
 	CSSPrice  string   `json:"cssPrice"`
 	Name      string   `json:"name"`
 	Title     string   `json:"title"`
+	// SoldOut — на карточке явный блок «товар закончился», а не поле
+	// availability в разметке. Разметка Ozon часто врёт.
+	SoldOut bool `json:"soldOut"`
 	// skipLDJSON — решение бота, а не страницы: со страницы приходит только
 	// то, что на ней написано, а правило «не верить разметке» задаётся
 	// настройками магазина.
@@ -351,18 +354,15 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 
 	name := cleanShopName(p.Name, p.Title)
 	if kopecks, ok := parseDisplayedPrice(p.CSSPrice); ok {
-		avail := true
-		if snap, ldOK := parseLDJSON(p.LDJSON); ldOK {
-			if name == "" {
-				name = snap.Name
-			}
-			avail = snap.Available
+		markup, markupOK := parseLDJSON(p.LDJSON)
+		if markupOK && name == "" {
+			name = markup.Name
 		}
 		return Snapshot{
 			Name:         name,
 			PriceKopecks: kopecks,
 			Currency:     "RUB",
-			Available:    avail,
+			Available:    offerAvailable(p, markup, markupOK),
 		}, nil
 	}
 
@@ -371,6 +371,7 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 			if name != "" {
 				snap.Name = name
 			}
+			snap.Available = offerAvailable(p, snap, true)
 			return snap, nil
 		}
 	}
@@ -378,6 +379,21 @@ func parseVisiblePriceBits(p pageBits) (Snapshot, error) {
 		return Snapshot{}, ErrChallenge
 	}
 	return Snapshot{}, ErrNoPrice
+}
+
+// offerAvailable решает наличие.
+// Виджет «товар закончился» важнее разметки. На Ozon, пока цену берём
+// только с карточки (skipLDJSON), разметке не верим: OutOfStock стоит
+// и на странице с кнопкой «В корзину». Иначе наличие берём из разметки.
+// Нет разметки — товар в наличии.
+func offerAvailable(p pageBits, markup Snapshot, markupOK bool) bool {
+	if p.SoldOut {
+		return false
+	}
+	if p.skipLDJSON || !markupOK {
+		return true
+	}
+	return markup.Available
 }
 
 func cleanShopName(h1, title string) string {
