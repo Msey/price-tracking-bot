@@ -223,12 +223,45 @@ func TestDismissCoveringTip(t *testing.T) {
 	if b.tipItem != 2 || b.tipNode != 1 {
 		t.Fatal("рамка над своим графиком должна остаться")
 	}
-	b.tipCoversAbove = true
+	b.tipCovers = true
 	b.dismissCoveringTip()
-	if b.tipItem != -1 || b.tipNode != -1 || b.tipCoversAbove {
-		t.Fatalf("перекрывающая рамка должна погаснуть: item=%d node=%d covers=%v", b.tipItem, b.tipNode, b.tipCoversAbove)
+	if b.tipItem != -1 || b.tipNode != -1 || b.tipCovers {
+		t.Fatalf("перекрывающая рамка должна погаснуть: item=%d node=%d covers=%v", b.tipItem, b.tipNode, b.tipCovers)
 	}
 	b.dismissCoveringTip()
+}
+
+func TestSuppressCoveredTip(t *testing.T) {
+	b := &board{
+		tipHoldOn:   true,
+		tipHoldItem: 1,
+		tipHoldNode: 2,
+		tipHold:     walk.Rectangle{X: 10, Y: 10, Width: 40, Height: 20},
+	}
+	if !b.suppressCoveredTip(12, 12, 1, 2) {
+		t.Fatal("тот же узел под погашенной рамкой должен остаться без подсказки")
+	}
+	if b.suppressCoveredTip(12, 12, 1, 3) {
+		t.Fatal("другой узел должен получить свою рамку")
+	}
+	if b.tipHoldOn {
+		t.Fatal("уход на другой узел снимает запрет")
+	}
+	b.tipHoldOn = true
+	if b.suppressCoveredTip(0, 0, 1, 2) {
+		t.Fatal("курсор вышел из рамки")
+	}
+	if b.tipHoldOn {
+		t.Fatal("выход из рамки снимает запрет")
+	}
+	if b.suppressCoveredTip(12, 12, 1, 2) {
+		t.Fatal("без запрета рамка не глушится")
+	}
+	// Касание правого и нижнего края — уже снаружи, как у rectContains.
+	b.tipHoldOn = true
+	if b.suppressCoveredTip(50, 15, 1, 2) || b.suppressCoveredTip(15, 30, 1, 2) {
+		t.Fatal("край рамки не должен держать запрет")
+	}
 }
 
 func TestHideTipNil(t *testing.T) {

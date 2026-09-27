@@ -117,6 +117,34 @@ func hitSample(width, n, x int) int {
 	return i
 }
 
+// tipCoversNodes — рамка подсказки закрыла чужую точку того же графика.
+// skip — узел, к которому рамка привязана. Точки в координатах графика,
+// originX/Y — его левый верх на экране. pad — радиус точки: иначе кружок
+// на краю рамки остаётся под текстом, хотя центр уже снаружи.
+func tipCoversNodes(pts []point, skip, originX, originY, tipX, tipY, tipW, tipH, pad int) bool {
+	if len(pts) < 2 || tipW < 1 || tipH < 1 {
+		return false
+	}
+	if pad < 0 {
+		pad = 0
+	}
+	left := tipX - pad
+	top := tipY - pad
+	right := tipX + tipW + pad
+	bottom := tipY + tipH + pad
+	for i, p := range pts {
+		if i == skip {
+			continue
+		}
+		x := originX + p.X
+		y := originY + p.Y
+		if x >= left && x < right && y >= top && y < bottom {
+			return true
+		}
+	}
+	return false
+}
+
 // sparkHandles — контрольные точки кубики с горизонтальными касательными:
 // кривая выходит с уровня from и заходит в to без излома на узле.
 func sparkHandles(from, to point) (c1, c2 point) {

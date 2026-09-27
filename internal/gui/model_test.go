@@ -214,6 +214,37 @@ func TestNodeSlots(t *testing.T) {
 	}
 }
 
+func TestTipCoversNodes(t *testing.T) {
+	pts := []point{{X: 10, Y: 30}, {X: 40, Y: 8}, {X: 80, Y: 30}}
+	// Рамка над первой точкой, пик второй точки внутри.
+	if !tipCoversNodes(pts, 0, 0, 0, 0, 0, 50, 20, 0) {
+		t.Fatal("пик под рамкой должен её гасить")
+	}
+	// Свой узел внутри рамки не считается: других точек там нет.
+	if tipCoversNodes(pts, 1, 0, 0, 30, 0, 20, 16, 0) {
+		t.Fatal("якорь рамки не должен прятать её сам")
+	}
+	if tipCoversNodes(pts, 0, 0, 0, 0, 0, 15, 10, 0) {
+		t.Fatal("рамка в стороне от остальных точек")
+	}
+	// Край полуоткрытый: x == right снаружи, pad в один пиксель затягивает кружок.
+	if tipCoversNodes(pts, 0, 0, 0, 0, 0, 40, 20, 0) {
+		t.Fatal("касание правым краем — не пересечение")
+	}
+	if !tipCoversNodes(pts, 0, 0, 0, 0, 0, 40, 20, 1) {
+		t.Fatal("радиус точки на краю рамки должен считаться перекрытием")
+	}
+	if tipCoversNodes(pts[:1], 0, 0, 0, 0, 0, 50, 20, 2) {
+		t.Fatal("одна точка — за рамкой больше никого нет")
+	}
+	if tipCoversNodes(nil, 0, 0, 0, 0, 0, 50, 20, 0) || tipCoversNodes(pts, 0, 0, 0, 0, 0, 0, 20, 0) {
+		t.Fatal("пустой график или нулевая рамка")
+	}
+	if tipCoversNodes(pts, 0, 100, 50, 100, 50, 50, 20, -3) != tipCoversNodes(pts, 0, 100, 50, 100, 50, 50, 20, 0) {
+		t.Fatal("отрицательный радиус не должен раздувать рамку")
+	}
+}
+
 func TestCubicBezierEndsAndMid(t *testing.T) {
 	from := point{X: 0, Y: 10}
 	to := point{X: 90, Y: 40}

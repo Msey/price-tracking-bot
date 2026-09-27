@@ -296,7 +296,7 @@ func (b *board) syncTip() {
 	if (shown || textChanged) && b.tipFace != nil {
 		b.tipFace.Invalidate()
 	}
-	b.tipCoversAbove = b.coversChartAbove(r)
+	b.tipCovers = b.coversChartAbove(r) || b.coversOtherNodes(r)
 }
 
 // coversChartAbove — рамка закрыла график предыдущей строки.
@@ -309,18 +309,50 @@ func (b *board) coversChartAbove(tip walk.Rectangle) bool {
 	return rectsOverlap(tip, m.chartRect(row))
 }
 
-// dismissCoveringTip гасит подсказку, которая лежит на графике строки выше.
+// coversOtherNodes — рамка закрыла чужую точку того же графика.
+// Узлы уже лежат в b.spark после nodePixel, новый срез не нужен.
+func (b *board) coversOtherNodes(tip walk.Rectangle) bool {
+	if b == nil || b.widget == nil || b.tipItem < 0 || b.tipNode < 0 || len(b.spark) < 2 {
+		return false
+	}
+	m := b.metrics()
+	width := b.widget.ClientBoundsPixels().Width
+	chart := m.chartRect(m.rowRect(width, b.tipItem*m.rowH-b.scroll))
+	pad := walk.IntFrom96DPI(2, m.dpi)
+	return tipCoversNodes(b.spark, b.tipNode, chart.X, chart.Y, tip.X, tip.Y, tip.Width, tip.Height, pad)
+}
+
+// dismissCoveringTip гасит подсказку, которая закрыла чужие точки.
 // Обычную рамку над своим узлом не трогает. Обработчик вешается один раз
 // при создании рамки и умирает вместе с ней.
 func (b *board) dismissCoveringTip() {
-	if b == nil || !b.tipCoversAbove {
+	if b == nil || !b.tipCovers {
 		return
+	}
+	if b.tipHost != nil {
+		b.tipHold = b.tipHost.BoundsPixels()
+		b.tipHoldItem = b.tipItem
+		b.tipHoldNode = b.tipNode
+		b.tipHoldOn = b.tipHold.Width > 0 && b.tipHold.Height > 0
 	}
 	b.tipItem, b.tipNode = -1, -1
 	b.hideTip()
 	if b.widget != nil {
 		b.widget.Invalidate()
 	}
+}
+
+// suppressCoveredTip — курсор ещё на том же узле внутри погашенной рамки.
+// Другой узел или выход из прямоугольника снимают запрет.
+func (b *board) suppressCoveredTip(x, y, item, node int) bool {
+	if b == nil || !b.tipHoldOn {
+		return false
+	}
+	if item == b.tipHoldItem && node == b.tipHoldNode && rectContains(b.tipHold, x, y) {
+		return true
+	}
+	b.tipHoldOn = false
+	return false
 }
 
 func (b *board) hideTip() {
@@ -330,7 +362,7 @@ func (b *board) hideTip() {
 	b.tipDate = ""
 	b.tipPrice = ""
 	b.tipMiss = false
-	b.tipCoversAbove = false
+	b.tipCovers = false
 }
 
 func (b *board) ensureTipSize(date, price string) {
