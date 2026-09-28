@@ -122,8 +122,13 @@ func hitSample(width, n, x int) int {
 // originX/Y — его левый верх на экране. pad — радиус точки: иначе кружок
 // на краю рамки остаётся под текстом, хотя центр уже снаружи.
 func tipCoversNodes(pts []point, skip, originX, originY, tipX, tipY, tipW, tipH, pad int) bool {
+	return tipCoverCount(pts, skip, originX, originY, tipX, tipY, tipW, tipH, pad) > 0
+}
+
+// tipCoverCount — сколько чужих точек попало в рамку. Свою не считает.
+func tipCoverCount(pts []point, skip, originX, originY, tipX, tipY, tipW, tipH, pad int) int {
 	if len(pts) < 2 || tipW < 1 || tipH < 1 {
-		return false
+		return 0
 	}
 	if pad < 0 {
 		pad = 0
@@ -132,6 +137,7 @@ func tipCoversNodes(pts []point, skip, originX, originY, tipX, tipY, tipW, tipH,
 	top := tipY - pad
 	right := tipX + tipW + pad
 	bottom := tipY + tipH + pad
+	n := 0
 	for i, p := range pts {
 		if i == skip {
 			continue
@@ -139,10 +145,19 @@ func tipCoversNodes(pts []point, skip, originX, originY, tipX, tipY, tipW, tipH,
 		x := originX + p.X
 		y := originY + p.Y
 		if x >= left && x < right && y >= top && y < bottom {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
+}
+
+// otherChartNode — курсор над другой точкой, не над якорем рамки.
+// Узел -1 значит «не на графике»: такую позицию рамка не прячет.
+func otherChartNode(tipItem, tipNode, hitItem, hitNode int) bool {
+	if tipNode < 0 || hitNode < 0 {
+		return false
+	}
+	return hitItem != tipItem || hitNode != tipNode
 }
 
 // sparkHandles — контрольные точки кубики с горизонтальными касательными:

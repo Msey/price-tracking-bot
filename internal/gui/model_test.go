@@ -245,6 +245,21 @@ func TestTipCoversNodes(t *testing.T) {
 	}
 }
 
+func TestOtherChartNode(t *testing.T) {
+	if otherChartNode(1, 2, 1, 2) {
+		t.Fatal("свой узел рамку не прячет")
+	}
+	if !otherChartNode(1, 2, 1, 3) {
+		t.Fatal("соседняя точка той же строки")
+	}
+	if !otherChartNode(1, 2, 0, 2) {
+		t.Fatal("точка строки выше")
+	}
+	if otherChartNode(1, 2, 1, -1) || otherChartNode(1, -1, 1, 2) {
+		t.Fatal("вне графика рамка остаётся")
+	}
+}
+
 func TestCubicBezierEndsAndMid(t *testing.T) {
 	from := point{X: 0, Y: 10}
 	to := point{X: 90, Y: 40}

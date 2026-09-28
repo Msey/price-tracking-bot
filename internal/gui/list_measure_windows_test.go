@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"bytes"
 	"log/slog"
 	"strings"
 	"testing"
@@ -117,12 +118,12 @@ func TestHeaderSetStatusDoesNotNeedWidget(t *testing.T) {
 
 func TestTipBoxSizeHugsText(t *testing.T) {
 	w, h := tipBoxSize(80, 16, 50, 18, 2, 1)
-	if w != 84 || h != 39 {
-		t.Fatalf("рамка %dx%d, ждали 84x39 под текст плюс pad", w, h)
+	if w != 135 || h != 22 {
+		t.Fatalf("рамка %dx%d, ждали 135x22 — дата и цена в одну строку", w, h)
 	}
 	w, h = tipBoxSize(10, 8, 40, 10, 2, 1)
-	if w != 44 {
-		t.Fatalf("ширина по более длинной строке: %d", w)
+	if w != 55 || h != 14 {
+		t.Fatalf("рамка %dx%d, ждали 55x14", w, h)
 	}
 }
 
@@ -217,58 +218,47 @@ func TestCoversChartAboveSkipsFirstRow(t *testing.T) {
 	}
 }
 
-func TestDismissCoveringTip(t *testing.T) {
-	b := &board{tipItem: 2, tipNode: 1, hover: 2}
-	b.dismissCoveringTip()
-	if b.tipItem != 2 || b.tipNode != 1 {
-		t.Fatal("рамка над своим графиком должна остаться")
+func TestTipWouldHideSkipsOwnNode(t *testing.T) {
+	b := &board{tipItem: 0, tipNode: 1}
+	r := walk.Rectangle{X: 10, Y: 10, Width: 20, Height: 20}
+	if b.tipWouldHide(r) {
+		t.Fatal("курсор снаружи будущей рамки")
 	}
-	b.tipCovers = true
-	b.dismissCoveringTip()
-	if b.tipItem != -1 || b.tipNode != -1 || b.tipCovers {
-		t.Fatalf("перекрывающая рамка должна погаснуть: item=%d node=%d covers=%v", b.tipItem, b.tipNode, b.tipCovers)
-	}
-	b.dismissCoveringTip()
-}
-
-func TestSuppressCoveredTip(t *testing.T) {
-	b := &board{
-		tipHoldOn:   true,
-		tipHoldItem: 1,
-		tipHoldNode: 2,
-		tipHold:     walk.Rectangle{X: 10, Y: 10, Width: 40, Height: 20},
-	}
-	if !b.suppressCoveredTip(12, 12, 1, 2) {
-		t.Fatal("тот же узел под погашенной рамкой должен остаться без подсказки")
-	}
-	if b.suppressCoveredTip(12, 12, 1, 3) {
-		t.Fatal("другой узел должен получить свою рамку")
-	}
-	if b.tipHoldOn {
-		t.Fatal("уход на другой узел снимает запрет")
-	}
-	b.tipHoldOn = true
-	if b.suppressCoveredTip(0, 0, 1, 2) {
-		t.Fatal("курсор вышел из рамки")
-	}
-	if b.tipHoldOn {
-		t.Fatal("выход из рамки снимает запрет")
-	}
-	if b.suppressCoveredTip(12, 12, 1, 2) {
-		t.Fatal("без запрета рамка не глушится")
-	}
-	// Касание правого и нижнего края — уже снаружи, как у rectContains.
-	b.tipHoldOn = true
-	if b.suppressCoveredTip(50, 15, 1, 2) || b.suppressCoveredTip(15, 30, 1, 2) {
-		t.Fatal("край рамки не должен держать запрет")
+	b.cursorX, b.cursorY = 15, 15
+	if b.tipWouldHide(r) {
+		t.Fatal("вне графика рамку не отменяем до показа")
 	}
 }
 
 func TestHideTipNil(t *testing.T) {
 	var b board
-	b.hideTip()
+	b.hideTip("")
 	b.syncTip()
 	b.disposeTip()
+}
+
+func TestTipLogOncePerState(t *testing.T) {
+	var buf bytes.Buffer
+	b := &board{log: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))}
+	b.tipItem, b.tipNode = 1, 2
+	b.tipPrice = "1 418 ₽"
+	b.tipCovers = true
+	r := walk.Rectangle{X: 1, Y: 2, Width: 3, Height: 4}
+	b.cursorX, b.cursorY = 40, 80
+	b.tipWhere = "над точкой"
+	b.noteTipShown(r, 41, 70)
+	b.noteTipShown(r, 41, 70)
+	b.hideTip("закрыла чужую точку")
+	text := buf.String()
+	if strings.Count(text, "контейнер цены показан") != 1 {
+		t.Fatalf("показ: %s", text)
+	}
+	if strings.Contains(text, "контейнер цены скрыт") {
+		t.Fatal("без окна скрывать нечего, строка в лог не нужна")
+	}
+	if !strings.Contains(text, "cursor_y=80") || !strings.Contains(text, "tip_y=2") || !strings.Contains(text, "node_y=70") || !strings.Contains(text, "над точкой") {
+		t.Fatalf("в показе нет курсора и рамки: %s", text)
+	}
 }
 
 func TestDisposeMeasureNil(t *testing.T) {

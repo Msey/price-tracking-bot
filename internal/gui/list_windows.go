@@ -33,6 +33,10 @@ type board struct {
 	onDelete     func(Item)
 	hoverTrash   bool
 	tipClick     time.Time
+	cursorX      int
+	cursorY      int
+	tipWhere     string
+	log          *slog.Logger
 	// spark/wpts/curve живут между кадрами: Invalidate при движении мыши
 	// иначе выделял бы новый срез на каждую видимую строку.
 	spark  []point
@@ -56,17 +60,18 @@ type board struct {
 	tipH     int
 	tipDPI   int
 	tipMiss  bool
-	// tipCovers — рамка закрыла чужой график: строку выше или другие
-	// точки своей строки. Движение мыши по рамке её гасит, иначе список
-	// под окном рамки событий не получает.
+	// tipCovers — выбранная рамка задевает чужие точки. В лог, не в решение
+	// «рисовать или нет»: решение принимается до показа.
 	tipCovers bool
-	// tipHold — куда погашенная рамка стояла. Пока курсор на том же узле
-	// внутри этого прямоугольника, рамку не поднимаем снова: иначе она
-	// мигает на каждом движении мыши.
-	tipHold     walk.Rectangle
-	tipHoldItem int
-	tipHoldNode int
-	tipHoldOn   bool
+	// tipTrace — последнее записанное в лог состояние рамки.
+	// Повторный syncTip с тем же узлом и теми же границами строку не плодит.
+	tipTrace struct {
+		visible bool
+		item    int
+		node    int
+		bounds  walk.Rectangle
+		covers  bool
+	}
 	// distinct — на графике только смена цены или наличия, плато из
 	// одинаковых соседних узлов схлопывается в один.
 	distinct bool
@@ -84,6 +89,7 @@ func newBoard(t theme) *board {
 // магазинов. Сбой одной картинки не мешает окну: строка просто рисуется
 // без неё.
 func (b *board) loadImages(keep func(walk.Disposable), log *slog.Logger) {
+	b.log = log
 	for _, want := range []struct {
 		color color.RGBA
 		dst   *walk.Image
@@ -146,7 +152,6 @@ func (b *board) setDistinct(on bool) {
 	b.distinct = on
 	b.rebuildSeries()
 	b.tipItem, b.tipNode = -1, -1
-	b.tipHoldOn = false
 	b.syncTip()
 	if b.widget != nil {
 		b.widget.Invalidate()
@@ -159,7 +164,6 @@ func (b *board) setItems(next []Item) {
 	}
 	b.items = next
 	b.rebuildSeries()
-	b.tipHoldOn = false
 	if b.tipItem >= len(b.items) {
 		b.tipItem, b.tipNode = -1, -1
 	}
@@ -367,7 +371,6 @@ func (b *board) attach(w *walk.CustomWidget) {
 	// Иначе после растягивания окна под последней строкой остаётся пустота:
 	// прокрутка упирается в старый предел до первого движения колеса.
 	w.SizeChanged().Attach(func() {
-		b.tipHoldOn = false
 		b.clampScroll()
 		b.syncTip()
 		w.Invalidate()
@@ -384,7 +387,6 @@ func (b *board) onWheel(delta int) {
 	if delta == 0 || b.widget == nil {
 		return
 	}
-	b.tipHoldOn = false
 	step := b.rowH() / 2
 	if delta > 0 {
 		b.scroll -= step
@@ -400,6 +402,7 @@ func (b *board) onMouseMove(x, y int) {
 	if b.widget == nil {
 		return
 	}
+	b.cursorX, b.cursorY = x, y
 	idx, node := b.hit(x, y)
 	trash := b.overTrash(x, y)
 	if trash {
@@ -410,16 +413,6 @@ func (b *board) onMouseMove(x, y int) {
 		b.widget.SetCursor(walk.CursorHand())
 	} else {
 		b.widget.SetCursor(walk.CursorArrow())
-	}
-	if b.suppressCoveredTip(x, y, idx, node) {
-		if b.hover != idx || b.hoverTrash != trash || b.tipItem != -1 {
-			b.hover = idx
-			b.hoverTrash = trash
-			b.tipItem, b.tipNode = -1, -1
-			b.hideTip()
-			b.widget.Invalidate()
-		}
-		return
 	}
 	if idx == b.hover && node == b.tipNode && idx == b.tipItem && trash == b.hoverTrash {
 		return
