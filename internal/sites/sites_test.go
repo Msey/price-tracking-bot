@@ -150,6 +150,58 @@ func TestParseYandexMarket(t *testing.T) {
 	}
 }
 
+func TestParseYandexShortLink(t *testing.T) {
+	const (
+		in  = "https://market.yandex.ru/cc/BBxyWV"
+		url = "https://market.yandex.ru/cc/BBxyWV"
+		key = "cc:BBxyWV"
+	)
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"из приложения", in},
+		{"www", "https://www.market.yandex.ru/cc/BBxyWV"},
+		{"мобильный хост", "https://m.market.yandex.ru/cc/BBxyWV"},
+		{"хвостовой слеш", "https://market.yandex.ru/cc/BBxyWV/"},
+		{"метки отбрасываются", in + "?utm_source=telegram"},
+		{"внутри текста", "смотри " + in + " 15000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, err := Parse(tt.in)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.in, err)
+			}
+			if ref.Site != YandexMarket || ref.ExternalKey != key || ref.URL != url {
+				t.Fatalf("Parse(%q) = %+v", tt.in, ref)
+			}
+		})
+	}
+
+	reject := []string{
+		"https://market.yandex.ru/cc/ab",
+		"https://market.yandex.ru/cc/",
+		"https://market.yandex.ru/cc/BBxyWV/extra",
+		"https://market.yandex.ru/cc/BB%20xy",
+		"https://market.yandex.ru/cc/BBxyWVBBxyWVBBxyW",
+	}
+	for _, raw := range reject {
+		_, err := Parse(raw)
+		if !errors.Is(err, ErrNotAProduct) {
+			t.Errorf("Parse(%q) = %v, ожидался ErrNotAProduct", raw, err)
+		}
+	}
+
+	other, err := Parse("https://market.yandex.ru/cc/bbxywv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.ExternalKey == key {
+		t.Fatal("регистр короткого кода нельзя схлопывать")
+	}
+}
+
 func TestParseYandexIsStable(t *testing.T) {
 	variants := []string{
 		"https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913",

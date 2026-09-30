@@ -79,6 +79,9 @@ var (
 	yandexProductDashPath = regexp.MustCompile(`(?i)^/product--[^/]+/(\d{6,})(?:/|$)`)
 	yandexProductPath     = regexp.MustCompile(`(?i)^/product/(\d{6,})(?:/|$)`)
 	yandexSafeSlug        = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,200}$`)
+	// Короткая ссылка из приложения: /cc/BBxyWV. Регистр кода важен,
+	// поэтому в ключе он не приводится к нижнему.
+	yandexShortPath = regexp.MustCompile(`(?i)^/cc/([A-Za-z0-9]{4,16})/?$`)
 	// /product/slug-2422341064 — id всегда хвост пути, чтобы «420» в названии не стал ключом.
 	ozonProductPath = regexp.MustCompile(`(?i)^/product/([^/]*?)(\d{6,})(?:/|$)`)
 	ozonSafeSlug    = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9-]{0,240}$`)
@@ -142,6 +145,14 @@ func parseDNS(u *url.URL) (Ref, error) {
 }
 
 func parseYandexMarket(u *url.URL) (Ref, error) {
+	if m := yandexShortPath.FindStringSubmatch(u.EscapedPath()); m != nil {
+		code := m[1]
+		return Ref{
+			Site:        YandexMarket,
+			ExternalKey: "cc:" + code,
+			URL:         "https://market.yandex.ru/cc/" + code,
+		}, nil
+	}
 	key, slug := yandexKeyAndSlug(u.EscapedPath())
 	if key == "" {
 		return Ref{}, ErrNotAProduct

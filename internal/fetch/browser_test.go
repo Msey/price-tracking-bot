@@ -185,6 +185,9 @@ func TestSameShopURL(t *testing.T) {
 	if !sameShopURL(market, "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913?nid=1") {
 		t.Fatal("market с query")
 	}
+	if !sameShopURL("https://market.yandex.ru/cc/BBxyWV", "https://market.yandex.ru/card/begovaya-dorozhka-sportflag-glow-run-a/4638722913") {
+		t.Fatal("короткая market после редиректа")
+	}
 	wb := "https://www.wildberries.ru/catalog/949425394/detail.aspx"
 	if !sameShopURL(wb, "https://www.wildberries.ru/catalog/949425394/detail.aspx?targetUrl=GP") {
 		t.Fatal("wildberries с query")
