@@ -37,7 +37,7 @@ var (
 	errOffline = errors.New("telegram: нет связи, уведомление отложено")
 	helpIntro  = `Я слежу за ценами на DNS, Яндекс.Маркете, Wildberries (WB) и Ozon.
 
-Пришлите ссылку на карточку DNS, Ozon, Яндекс.Маркета или Wildberries. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент. Если товар снова появился — напишу только про наличие. Если пропал — сначала перепроверю ещё два раза и только потом напишу, тоже только про наличие.
+Пришлите ссылку на карточку DNS, Ozon, Яндекс.Маркета или Wildberries. Короткие ссылки из приложений тоже подходят: ozon.ru/t/… и market.yandex.ru/cc/…. Первую найденную цену запомню молча. Когда она изменится относительно предыдущей — сразу напишу в этот чат: выросла или снизилась, на сколько и на какой процент. Если товар снова появился — напишу только про наличие. Если пропал — сначала перепроверю ещё два раза и только потом напишу, тоже только про наличие. Если письмо не ушло, накоплю изменения и пришлю их одним сообщением, когда связь появится.
 
 Рядом со ссылкой можно указать порог в рублях. Один раз напишу, когда цена станет ниже этого числа. После письма порог сниму.
 
@@ -254,7 +254,38 @@ func (b *Bot) Notify(ctx context.Context, chatID int64, message string) error {
 	}
 	b.log.Info("отправка в Telegram", "chat_id", chatID, "bytes", len(message))
 	_, err := tb.Send(telebot.ChatID(chatID), message, telebot.NoPreview)
+	if err != nil && permanentDelivery(err) {
+		b.log.Warn("уведомление снято без повтора", "chat_id", chatID, "error", redactTelegram(err.Error()))
+		return nil
+	}
 	return err
+}
+
+// permanentDelivery — писать в этот чат больше нельзя. Повтор только
+// забьёт очередь: человек заблокировал бота или чата уже нет.
+func permanentDelivery(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "blocked"):
+		return true
+	case strings.Contains(s, "user is deactivated"):
+		return true
+	case strings.Contains(s, "chat not found"):
+		return true
+	case strings.Contains(s, "bot can't initiate"):
+		return true
+	case strings.Contains(s, "have no rights"):
+		return true
+	case strings.Contains(s, "peer_id_invalid"):
+		return true
+	case strings.Contains(s, "message is too long"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *Bot) accessMiddleware(next telebot.HandlerFunc) telebot.HandlerFunc {
@@ -545,7 +576,7 @@ func explainParseError(err error) string {
 	case errors.Is(err, sites.ErrUnknownSite):
 		return "Не узнаю этот магазин. Сейчас работают DNS, Яндекс.Маркет, Wildberries (WB) и Ozon."
 	case errors.Is(err, sites.ErrNotAProduct):
-		return "Похоже, это не карточка товара. Нужна ссылка на товар DNS, Яндекс.Маркета, Wildberries или Ozon."
+		return "Похоже, это не карточка товара. Нужна ссылка на товар DNS, Яндекс.Маркета, Wildberries или Ozon. Короткие ozon.ru/t/… и market.yandex.ru/cc/… тоже подходят."
 	default:
 		return "Это не похоже на ссылку. Пришлите адрес карточки товара."
 	}

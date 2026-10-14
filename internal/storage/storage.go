@@ -329,13 +329,24 @@ func (s *Store) DeleteSubscription(ctx context.Context, chatID, productID int64)
 	if chatID <= 0 || productID <= 0 {
 		return false, nil
 	}
-	res, err := s.db.ExecContext(ctx, sqlDeleteSubscription, productID, chatID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("storage: начало транзакции: %w", err)
+	}
+	defer tx.Rollback()
+	if err := dropChatProductQueue(ctx, tx, chatID, productID); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, sqlDeleteSubscription, productID, chatID)
 	if err != nil {
 		return false, fmt.Errorf("storage: удаление подписки на товар %d: %w", productID, err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("storage: результат удаления: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("storage: фиксация транзакции: %w", err)
 	}
 	return affected > 0, nil
 }
@@ -373,6 +384,9 @@ func (s *Store) DeleteOwnAt(ctx context.Context, chatID int64, n int) (Product, 
 		return Product{}, total, false, fmt.Errorf("storage: номер %d из списка %d: %w", n, chatID, err)
 	}
 
+	if err := dropChatProductQueue(ctx, tx, chatID, product.ID); err != nil {
+		return Product{}, total, false, err
+	}
 	res, err := tx.ExecContext(ctx, sqlDeleteOwnSub, subID, chatID)
 	if err != nil {
 		return Product{}, total, false, fmt.Errorf("storage: удаление подписки %d: %w", subID, err)
@@ -393,13 +407,27 @@ func (s *Store) DeleteProductSubscriptions(ctx context.Context, productID int64)
 	if productID < 1 {
 		return 0, nil
 	}
-	res, err := s.db.ExecContext(ctx, sqlDeleteProductSubscriptions, productID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("storage: начало транзакции: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, sqlDeleteProductNotices, productID); err != nil {
+		return 0, fmt.Errorf("storage: очередь товара %d: %w", productID, err)
+	}
+	if _, err := tx.ExecContext(ctx, sqlDeleteProductAlerts, productID); err != nil {
+		return 0, fmt.Errorf("storage: очередь порогов товара %d: %w", productID, err)
+	}
+	res, err := tx.ExecContext(ctx, sqlDeleteProductSubscriptions, productID)
 	if err != nil {
 		return 0, fmt.Errorf("storage: удаление подписок на товар %d: %w", productID, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("storage: результат удаления подписок: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("storage: фиксация транзакции: %w", err)
 	}
 	return n, nil
 }

@@ -529,9 +529,9 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 	if err := tr.checkOne(ctx, p); err != nil {
 		t.Fatal(err)
 	}
-	// смена цены — обоим, порог Алисы (42) — только ей
-	if notes.n != 3 {
-		t.Fatalf("писем %d, ожидалось 3 (два про смену и одно про порог)", notes.n)
+	// Смена и порог одного чата уходят одним письмом. Бобу — только смена.
+	if notes.n != 2 {
+		t.Fatalf("писем %d, ожидалось 2 (Алисе сводка, Бобу смена)", notes.n)
 	}
 	alerts := 0
 	for i, chat := range notes.chats {
@@ -539,6 +539,9 @@ func TestCheckOneFiresPriceAlertOncePerSubscriber(t *testing.T) {
 			alerts++
 			if chat != 42 {
 				t.Fatalf("первый порог ушёл чужому чату %d", chat)
+			}
+			if !strings.Contains(notes.msgs[i], "снизилась") {
+				t.Fatalf("порог Алисы должен быть в том же письме, что и смена: %s", notes.msgs[i])
 			}
 		}
 	}
@@ -828,5 +831,135 @@ func TestStatusTextCountsDown(t *testing.T) {
 	got = tr.StatusText()
 	if !strings.Contains(got, "Ошибка dns") || !strings.Contains(got, "следующая проверка через") {
 		t.Fatalf("ошибка с отсчётом: %q", got)
+	}
+}
+
+type gateNotify struct {
+	fail int
+	fakeNotify
+}
+
+func (g *gateNotify) Notify(ctx context.Context, chatID int64, message string) error {
+	if g.fail > 0 {
+		g.fail--
+		g.n++
+		return errors.New("dial tcp: timeout")
+	}
+	return g.fakeNotify.Notify(ctx, chatID, message)
+}
+
+func TestUndeliveredChangesFoldIntoOneMessage(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "fold.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dns := &fakeDNS{price: 10000}
+	notes := &gateNotify{fail: 1}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{}, nil)
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.price = 9000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 || len(notes.msgs) != 0 {
+		t.Fatalf("первая отправка должна сорваться без письма: n=%d msgs=%d", notes.n, len(notes.msgs))
+	}
+	dns.price = 8000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if notes.n != 1 {
+		t.Fatalf("пока действует пауза, вторую отправку слать рано: n=%d", notes.n)
+	}
+	tr.outboxHold = time.Time{}
+	if err := tr.flushOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.msgs) != 1 {
+		t.Fatalf("писем %d, ожидалось одно", len(notes.msgs))
+	}
+	if !strings.Contains(notes.msgs[0], "100") || !strings.Contains(notes.msgs[0], "80") {
+		t.Fatalf("сводка должна схлопнуть 100→80: %s", notes.msgs[0])
+	}
+	if strings.Contains(notes.msgs[0], "90") {
+		t.Fatalf("промежуточные 90 ₽ в сводку не входят: %s", notes.msgs[0])
+	}
+	tr.outboxHold = time.Time{}
+	if err := tr.flushOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.msgs) != 1 {
+		t.Fatal("доставленную сводку нельзя слать ещё раз")
+	}
+}
+
+func TestOutOfStockDoesNotSpendQueuedAlert(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "gone-alert.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	p, _, err := store.AddSubscription(ctx, 42, "dns", "9ee3a4f41358d9cb", "https://www.dns-shop.ru/product/9ee3a4f41358d9cb/", "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPriceAlert(ctx, 42, p.ID, 9500); err != nil {
+		t.Fatal(err)
+	}
+	dns := &missingDNS{price: 10000}
+	notes := &gateNotify{fail: 1}
+	tr := New(store, map[string]Fetcher{"dns": dns}, notes, Config{}, nil)
+	tr.recheckGap = 0
+
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.price = 9000
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	dns.miss = true
+	if err := tr.checkOne(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	tr.outboxHold = time.Time{}
+	if err := tr.flushOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.msgs) != 1 || !strings.Contains(notes.msgs[0], "пропал") || strings.Contains(notes.msgs[0], "ниже порога") {
+		t.Fatalf("пропажа без порога: %+v", notes.msgs)
+	}
+	left, err := store.ListSubscriptions(ctx, 42)
+	if err != nil || len(left) != 1 || left[0].AlertKopecks != 9500 {
+		t.Fatalf("порог должен дождаться возврата: %+v err=%v", left, err)
+	}
+	if err := tr.flushOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(notes.msgs) != 1 {
+		t.Fatal("повторная сводка не нужна")
+	}
+}
+
+func TestPackNoticesSplitsOnBlockBoundary(t *testing.T) {
+	parts := []noticePart{{text: "аа"}, {text: "бб"}, {text: "вв"}}
+	got := packNotices(parts, len("аа")+len("\n\n")+len("бб"))
+	if len(got) != 2 || len(got[0]) != 2 || len(got[1]) != 1 {
+		t.Fatalf("пакеты: %+v", got)
+	}
+	if strings.Contains(renderNotices(got[0]), "вв") {
+		t.Fatal("третий блок уехал в первый пакет")
 	}
 }

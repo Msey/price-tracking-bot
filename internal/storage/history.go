@@ -269,9 +269,9 @@ func (s *Store) Fingerprint(ctx context.Context) (Fingerprint, error) {
 	return f, nil
 }
 
-// MarkNotified запоминает, что об этом замере уже написали. Читателя у этих
-// столбцов нет: решение об уведомлении принимается по истории цен, а запись
-// остаётся следом в базе.
+// MarkNotified запоминает, что об этом состоянии уже написали. Решение
+// «писать или нет» принимается по истории цен, а не по этим столбцам:
+// недоставленное лежит в очереди и уходит позже.
 func (s *Store) MarkNotified(ctx context.Context, productID, kopecks int64, available bool) error {
 	avail := 0
 	if available {

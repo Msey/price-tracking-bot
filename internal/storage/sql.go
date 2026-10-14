@@ -105,6 +105,65 @@ const (
 
 	sqlDeleteProductSubscriptions = `DELETE FROM subscriptions WHERE product_id = ?`
 
+	sqlDeleteNotices = `
+		DELETE FROM notice_outbox WHERE chat_id = ? AND product_id = ?`
+
+	sqlDeleteAlerts = `
+		DELETE FROM alert_outbox WHERE chat_id = ? AND product_id = ?`
+
+	sqlDeleteProductNotices = `DELETE FROM notice_outbox WHERE product_id = ?`
+
+	sqlDeleteProductAlerts = `DELETE FROM alert_outbox WHERE product_id = ?`
+
+	sqlFoldChange = `
+		INSERT INTO notice_outbox (
+		    chat_id, product_id, prev_kopecks, prev_available, cur_kopecks, cur_available)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (chat_id, product_id) DO UPDATE SET
+		    cur_kopecks = excluded.cur_kopecks,
+		    cur_available = excluded.cur_available`
+
+	sqlDropFoldedChange = `
+		DELETE FROM notice_outbox
+		WHERE chat_id = ? AND product_id = ?
+		  AND prev_kopecks = cur_kopecks AND prev_available = cur_available`
+
+	sqlFoldAlert = `
+		INSERT INTO alert_outbox (
+		    subscription_id, chat_id, product_id, price_kopecks, alert_kopecks)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (subscription_id) DO UPDATE SET
+		    price_kopecks = excluded.price_kopecks,
+		    alert_kopecks = excluded.alert_kopecks`
+
+	sqlDropAlert = `DELETE FROM alert_outbox WHERE subscription_id = ?`
+
+	sqlHasOutbox = `
+		SELECT EXISTS(SELECT 1 FROM notice_outbox)
+		    OR EXISTS(SELECT 1 FROM alert_outbox)`
+
+	sqlOutboxChats = `
+		SELECT chat_id FROM notice_outbox
+		UNION
+		SELECT chat_id FROM alert_outbox
+		ORDER BY chat_id`
+
+	sqlOutboxChanges = `
+		SELECT product_id, prev_kopecks, prev_available, cur_kopecks, cur_available
+		FROM notice_outbox
+		WHERE chat_id = ?
+		ORDER BY product_id`
+
+	sqlOutboxAlerts = `
+		SELECT subscription_id, product_id, price_kopecks, alert_kopecks
+		FROM alert_outbox
+		WHERE chat_id = ?
+		ORDER BY product_id, subscription_id`
+
+	sqlForgetChange = `DELETE FROM notice_outbox WHERE chat_id = ? AND product_id = ?`
+
+	sqlChangeStillQueued = `SELECT COUNT(*) FROM notice_outbox WHERE product_id = ?`
+
 	sqlProductsDue = `
 		SELECT p.id, p.site, p.external_key, p.url, p.name, p.city
 		FROM products p

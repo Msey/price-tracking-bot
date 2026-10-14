@@ -31,6 +31,27 @@ func TestLinkToEscapesHTML(t *testing.T) {
 	}
 }
 
+func TestExplainNotAProductMentionsShortLinks(t *testing.T) {
+	got := explainParseError(sites.ErrNotAProduct)
+	for _, want := range []string{"ozon.ru/t/", "market.yandex.ru/cc/"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("в ответе про чужую страницу нет %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPermanentDelivery(t *testing.T) {
+	if !permanentDelivery(fmt.Errorf("Forbidden: bot was blocked by the user")) {
+		t.Fatal("блокировка должна снимать письмо с повтора")
+	}
+	if permanentDelivery(fmt.Errorf("dial tcp 149.154.166.110:443: i/o timeout")) {
+		t.Fatal("обрыв сети нужно повторять")
+	}
+	if !permanentDelivery(fmt.Errorf("Bad Request: message is too long")) {
+		t.Fatal("слишком длинное письмо нельзя повторять бесконечно")
+	}
+}
+
 func TestExplainParseErrorEscapes(t *testing.T) {
 	err := fmt.Errorf("%w: %s", sites.ErrNotSupported, "<b>XSS</b>")
 	got := explainParseError(err)
@@ -65,7 +86,7 @@ func TestDescribePriceZeroMissing(t *testing.T) {
 
 func TestHelpTextIsForUsers(t *testing.T) {
 	got := helpFor(false)
-	for _, want := range []string{"/list", "/del", "DNS", "Ozon", "Wildberries", "WB", "1,5 часа", "Первую найденную цену", "Не больше 5 ссылок", "порог", "15000", "сниму", "наличи", "два раза"} {
+	for _, want := range []string{"/list", "/del", "DNS", "Ozon", "Wildberries", "WB", "1,5 часа", "Первую найденную цену", "Не больше 5 ссылок", "порог", "15000", "сниму", "наличи", "два раза", "ozon.ru/t/", "market.yandex.ru/cc/", "одним сообщением"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("в /help нет %q:\n%s", want, got)
 		}

@@ -76,6 +76,28 @@ var migrations = []string{
 	// 6. Сработавший порог больше не храним: только у той подписки,
 	// которой уже писали. Чужие пороги на тот же товар не трогаем.
 	`UPDATE subscriptions SET alert_kopecks = 0, alert_fired = 0 WHERE alert_fired = 1;`,
+
+	// 7. Недоставленные письма. Пока Telegram молчит, изменения одного
+	// чата копятся здесь и уходят одной сводкой.
+	`
+	CREATE TABLE IF NOT EXISTS notice_outbox (
+	    chat_id        INTEGER NOT NULL,
+	    product_id     INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+	    prev_kopecks   INTEGER NOT NULL,
+	    prev_available INTEGER NOT NULL,
+	    cur_kopecks    INTEGER NOT NULL,
+	    cur_available  INTEGER NOT NULL,
+	    PRIMARY KEY (chat_id, product_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS alert_outbox (
+	    subscription_id INTEGER PRIMARY KEY REFERENCES subscriptions(id) ON DELETE CASCADE,
+	    chat_id         INTEGER NOT NULL,
+	    product_id      INTEGER NOT NULL,
+	    price_kopecks   INTEGER NOT NULL,
+	    alert_kopecks   INTEGER NOT NULL
+	);
+	`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

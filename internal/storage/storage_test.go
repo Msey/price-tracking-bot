@@ -1114,3 +1114,40 @@ func TestMigrateClearsFiredAlertOnly(t *testing.T) {
 		t.Fatalf("живой порог Боба задели: %+v err=%v", bob, err)
 	}
 }
+
+func TestFoldChangeKeepsFirstPrevAndDropsNetZero(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _, err := s.AddSubscription(ctx, chatAlice, "dns", dnsKey, dnsURL, "moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FoldChange(ctx, chatAlice, p.ID, 10000, 9000, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FoldChange(ctx, chatAlice, p.ID, 9000, 8000, true, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.OutboxChanges(ctx, chatAlice)
+	if err != nil || len(rows) != 1 || rows[0].PrevKopecks != 10000 || rows[0].CurKopecks != 8000 {
+		t.Fatalf("схлопывание: %+v err=%v", rows, err)
+	}
+	if err := s.FoldChange(ctx, chatAlice, p.ID, 8000, 10000, true, true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.OutboxChanges(ctx, chatAlice)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("возврат к доставленной цене должен стереть очередь: %+v err=%v", rows, err)
+	}
+	if err := s.FoldChange(ctx, chatAlice, p.ID, 10000, 7000, true, true); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.DeleteSubscription(ctx, chatAlice, p.ID)
+	if err != nil || !ok {
+		t.Fatalf("снятие подписки: ok=%v err=%v", ok, err)
+	}
+	pending, err := s.HasOutbox(ctx)
+	if err != nil || pending {
+		t.Fatalf("после отписки очередь должна быть пустой: %v err=%v", pending, err)
+	}
+}

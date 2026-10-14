@@ -15,7 +15,6 @@ import (
 	"github.com/Msey/price-tracking-bot/internal/fetch"
 	"github.com/Msey/price-tracking-bot/internal/sites"
 	"github.com/Msey/price-tracking-bot/internal/storage"
-	"github.com/Msey/price-tracking-bot/internal/view"
 	"github.com/Msey/price-tracking-bot/internal/wait"
 )
 
@@ -48,6 +47,10 @@ const decisionHistoryLimit = 16
 // товарами, и проверка одной карточки растянулась бы на минуту.
 const disappearanceRecheckGap = 3 * time.Second
 
+// outboxRetry — пауза перед повторной отправкой сводки. Короче паузы
+// между карточками: иначе обрыв Telegram повторялся бы на каждом товаре.
+const outboxRetry = 30 * time.Second
+
 type Tracker struct {
 	store      *storage.Store
 	fetchers   map[string]Fetcher
@@ -63,6 +66,7 @@ type Tracker struct {
 	status     string
 	until      time.Time
 	waitKind   string
+	outboxHold time.Time
 	done       chan struct{}
 }
 
@@ -248,18 +252,34 @@ func (t *Tracker) wait(ctx context.Context, d time.Duration, kind string) bool {
 		return ctx.Err() == nil
 	}
 	t.log.Debug("пауза трекера", "duration", d, "kind", kind)
-	t.setUntil(time.Now().Add(d), kind)
+	deadline := time.Now().Add(d)
+	t.setUntil(deadline, kind)
 	defer t.clearUntil()
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.kick:
-		t.RequestCheck()
-		return true
-	case <-timer.C:
-		return true
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		slice := time.Until(deadline)
+		if slice <= 0 {
+			return true
+		}
+		if t.hasOutbox(ctx) && slice > outboxRetry {
+			slice = outboxRetry
+		}
+		timer := time.NewTimer(slice)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-t.kick:
+			timer.Stop()
+			t.RequestCheck()
+			return true
+		case <-timer.C:
+			if time.Now().Before(deadline) {
+				t.flushOutbox(ctx)
+			}
+		}
 	}
 }
 
@@ -290,6 +310,11 @@ func (t *Tracker) cycleAll(ctx context.Context) {
 }
 
 func (t *Tracker) cycleWith(ctx context.Context, skipGap bool, list func(context.Context, string) ([]storage.Product, error)) {
+	defer func() {
+		if err := t.flushOutbox(ctx); err != nil {
+			t.log.Error("не отправил сводку", "error", err)
+		}
+	}()
 	for _, site := range t.siteNames() {
 		if ctx.Err() != nil {
 			return
@@ -464,10 +489,6 @@ func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name str
 		return err
 	}
 	d := Decide(history)
-	named := p
-	if name != "" {
-		named.Name = name
-	}
 	switch {
 	case d.Baseline:
 		if err := t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available); err != nil {
@@ -475,68 +496,168 @@ func (t *Tracker) afterSnapshot(ctx context.Context, p storage.Product, name str
 		}
 	case d.Notify:
 		t.log.Info("цена изменилась, уведомляю", "product", p.ID, "from", d.Previous.PriceKopecks, "to", d.Current.PriceKopecks)
-		product, err := t.store.ProductByID(ctx, p.ID)
-		if err != nil {
-			product = named
+		if t.notify == nil {
+			if err := t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available); err != nil {
+				return err
+			}
+			break
 		}
-		if err := t.announce(ctx, product, d); err != nil {
+		if err := t.queueChange(ctx, p.ID, d); err != nil {
 			return err
 		}
-		if err := t.store.MarkNotified(ctx, p.ID, d.Current.PriceKopecks, d.Current.Available); err != nil {
+	}
+	if t.notify != nil {
+		// Порог не отправляем с пустой витрины и не держим его в очереди:
+		// иначе следующая сводка погасила бы его, хотя цены на странице нет.
+		// Подписка остаётся, и порог снова встанет в очередь при возврате.
+		if available {
+			if err := t.queueAlerts(ctx, p.ID, kopecks); err != nil {
+				return err
+			}
+		} else if err := t.store.DropQueuedAlerts(ctx, p.ID); err != nil {
 			return err
 		}
-		named = product
 	}
-	if available {
-		return t.announceAlerts(ctx, named, kopecks)
-	}
-	return nil
+	return t.flushOutbox(ctx)
 }
 
-func (t *Tracker) announceAlerts(ctx context.Context, p storage.Product, kopecks int64) error {
-	if t.notify == nil || t.store == nil {
-		return nil
+// errDeliveryLater — сводку сейчас не унести. Замер уже в базе, очередь
+// остаётся, проверка из-за этого не считается ошибкой магазина.
+var errDeliveryLater = errors.New("уведомление отложено")
+
+func (t *Tracker) queueChange(ctx context.Context, productID int64, d Decision) error {
+	chats, err := t.store.SubscriberChats(ctx, productID)
+	if err != nil {
+		return err
 	}
-	alerts, err := t.store.PendingPriceAlerts(ctx, p.ID)
+	if len(chats) == 0 {
+		return t.store.MarkNotified(ctx, productID, d.Current.PriceKopecks, d.Current.Available)
+	}
+	return t.store.FoldProductChange(ctx, chats, productID,
+		d.Previous.PriceKopecks, d.Current.PriceKopecks,
+		d.Previous.Available, d.Current.Available)
+}
+
+func (t *Tracker) queueAlerts(ctx context.Context, productID, kopecks int64) error {
+	alerts, err := t.store.PendingPriceAlerts(ctx, productID)
 	if err != nil {
 		return err
 	}
 	for _, a := range alerts {
-		if !storage.AlertDue(kopecks, a.Kopecks, false) {
-			continue
-		}
-		msg := view.PriceBelow(p, kopecks, a.Kopecks)
-		t.log.Info("отправляю порог", "chat_id", a.ChatID, "product", p.ID, "alert", a.Kopecks)
-		if err := t.notify.Notify(ctx, a.ChatID, msg); err != nil {
-			t.log.Warn("порог не доставлен", "chat_id", a.ChatID, "product", p.ID, "error", err)
-			continue
-		}
-		if err := t.store.ClearPriceAlert(ctx, a.SubscriptionID); err != nil {
-			t.log.Warn("не зачистил разовый порог", "sub", a.SubscriptionID, "error", err)
+		if err := t.store.FoldAlert(ctx, a.SubscriptionID, a.ChatID, productID, kopecks, a.Kopecks); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (t *Tracker) announce(ctx context.Context, p storage.Product, d Decision) error {
-	if t.notify == nil {
+func (t *Tracker) hasOutbox(ctx context.Context) bool {
+	if t == nil || t.store == nil || ctx.Err() != nil {
+		return false
+	}
+	ok, err := t.store.HasOutbox(ctx)
+	if err != nil {
+		t.log.Warn("очередь писем", "error", err)
+		return false
+	}
+	return ok
+}
+
+func (t *Tracker) flushOutbox(ctx context.Context) error {
+	if t == nil || t.notify == nil || t.store == nil || ctx.Err() != nil {
 		return nil
 	}
-	chats, err := t.store.SubscriberChats(ctx, p.ID)
+	if !t.outboxHold.IsZero() && time.Now().Before(t.outboxHold) {
+		return nil
+	}
+	chats, err := t.store.OutboxChats(ctx)
 	if err != nil {
 		return err
 	}
-	msg := view.PriceChange(p, d.Previous, d.Current)
-	// Недоставленное уведомление не отменяет замер: цена уже в базе, а
-	// один заблокировавший бота подписчик иначе помечал бы всю проверку
-	// ошибкой и писал строку в fetch_errors.
 	for _, chatID := range chats {
-		t.log.Info("отправляю уведомление", "chat_id", chatID, "product", p.ID)
-		if err := t.notify.Notify(ctx, chatID, msg); err != nil {
-			t.log.Warn("уведомление не доставлено", "chat_id", chatID, "product", p.ID, "error", err)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err := t.flushChat(ctx, chatID); err != nil {
+			if errors.Is(err, errDeliveryLater) {
+				return nil
+			}
+			return err
 		}
 	}
 	return nil
+}
+
+func (t *Tracker) flushChat(ctx context.Context, chatID int64) error {
+	changes, err := t.store.OutboxChanges(ctx, chatID)
+	if err != nil {
+		return err
+	}
+	alerts, err := t.store.OutboxAlerts(ctx, chatID)
+	if err != nil {
+		return err
+	}
+	if len(changes) == 0 && len(alerts) == 0 {
+		return nil
+	}
+	products := make(map[int64]storage.Product)
+	for _, id := range noticeProductIDs(changes, alerts) {
+		p, err := t.store.ProductByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		products[id] = p
+	}
+	parts := digestParts(products, changes, alerts)
+	for _, chunk := range packNotices(parts, noticeLimit) {
+		msg := renderNotices(chunk)
+		t.log.Info("отправляю сводку", "chat_id", chatID, "parts", len(chunk), "bytes", len(msg))
+		if err := t.notify.Notify(ctx, chatID, msg); err != nil {
+			t.log.Warn("уведомление не доставлено", "chat_id", chatID, "parts", len(chunk), "error", diaglog.Redact(err.Error()))
+			t.outboxHold = time.Now().Add(outboxRetry)
+			return errDeliveryLater
+		}
+		t.outboxHold = time.Time{}
+		if err := t.ackChunk(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func noticeProductIDs(changes []storage.QueuedChange, alerts []storage.QueuedAlert) []int64 {
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, row := range changes {
+		if !seen[row.ProductID] {
+			seen[row.ProductID] = true
+			ids = append(ids, row.ProductID)
+		}
+	}
+	for _, row := range alerts {
+		if !seen[row.ProductID] {
+			seen[row.ProductID] = true
+			ids = append(ids, row.ProductID)
+		}
+	}
+	return ids
+}
+
+func (t *Tracker) ackChunk(ctx context.Context, chatID int64, parts []noticePart) error {
+	changes := make([]storage.AckChange, 0, len(parts))
+	var alerts []int64
+	for _, part := range parts {
+		if part.change {
+			changes = append(changes, storage.AckChange{
+				ProductID:    part.productID,
+				CurKopecks:   part.curKopecks,
+				CurAvailable: part.curAvailable,
+			})
+			continue
+		}
+		alerts = append(alerts, part.alertSub)
+	}
+	return t.store.AckOutbox(ctx, chatID, changes, alerts)
 }
 
 func siteCheckInterval(site string) time.Duration {
